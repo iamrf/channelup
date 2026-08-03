@@ -85,26 +85,42 @@ def image_of(entry) -> str | None:
         return m.group(1)
     return None
 
-def fetch_new() -> list[dict]:
-    """Blocking; run via asyncio.to_thread. Returns unseen items, oldest first."""
+def parse_feed(source: str) -> list[dict]:
+    """Blocking, runs in a worker thread. Must NOT touch the sqlite connection."""
+    out = []
+    for e in feedparser.parse(source).entries:
+        link = e.get("link") or e.get("id")
+        if not link:
+            continue
+        body = clean((e.get("content") or [{}])[0].get("value") or e.get("summary", ""))
+        out.append({
+            "title": clean(e.get("title", "")),
+            "link": link,
+            "text": body[:4000],
+            "image": image_of(e),
+        })
+    return out
+
+def fetch_all() -> list[dict]:
     items = []
     for url in RSS_SOURCES:
         try:
-            feed = feedparser.parse(url)
-            for e in feed.entries:
-                link = e.get("link") or e.get("id")
-                if not link or seen(link):
-                    continue
-                body = clean(e.get("content", [{}])[0].get("value") or e.get("summary", ""))
-                items.append({
-                    "title": clean(e.get("title", "")),
-                    "link": link,
-                    "text": body[:4000],
-                    "image": image_of(e),
-                })
+            items += parse_feed(url)
         except Exception:
             log.exception("fetch failed: %s", url)
-    return items[:MAX_PER_RUN]
+    return items
+
+def select_new(items: list[dict]) -> list[dict]:
+    """Event-loop thread only (reads DB). Also drops links duplicated across feeds."""
+    fresh, batch = [], set()
+    for i in items:
+        if i["link"] in batch or seen(i["link"]):
+            continue
+        batch.add(i["link"])
+        fresh.append(i)
+        if len(fresh) >= MAX_PER_RUN:
+            break
+    return fresh
 
 # --- LLM --------------------------------------------------------------------
 # ponytail: single retry-free-ish loop; if you need per-provider tuning, split later.
@@ -160,7 +176,7 @@ async def publish(bot: Bot, item: dict, text: str) -> None:
 stats = {"last_run": None, "published": 0, "errors": 0}
 
 async def run_once(bot: Bot) -> int:
-    items = await asyncio.to_thread(fetch_new)
+    items = select_new(await asyncio.to_thread(fetch_all))
     session = await bot.session.create_session()
     n = 0
     for item in items:

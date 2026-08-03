@@ -39,4 +39,17 @@ c.mark("https://ex.com/a")  # idempotent, must not raise
 assert c.seen("https://ex.com/b") is False
 
 assert "{language}" not in c.SYSTEM_PROMPT.format(language="en")
+
+# parse_feed must be thread-safe: no DB access, so it works under to_thread
+import asyncio
+
+items = asyncio.run(asyncio.to_thread(c.parse_feed, FEED))
+assert [i["link"] for i in items] == ["https://ex.com/a", "https://ex.com/b"]
+
+# 'a' was marked above, so only 'b' is new; duplicate links across feeds collapse
+fresh = c.select_new(items + items)
+assert [i["link"] for i in fresh] == ["https://ex.com/b"], fresh
+
+c.MAX_PER_RUN = 1
+assert len(c.select_new([{"link": f"https://ex.com/{n}"} for n in range(5)])) == 1
 print("ok")
