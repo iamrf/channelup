@@ -12,6 +12,7 @@ import time
 
 import feedparser
 from aiogram import Bot, Dispatcher, F
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.types import Message
 from dotenv import load_dotenv
@@ -169,8 +170,11 @@ async def publish(bot: Bot, item: dict, text: str) -> None:
             try:
                 await bot.send_photo(chat, item["image"], caption=body[:1024])
                 continue
-            except Exception:
-                log.warning("photo failed, falling back to text: %s", item["image"])
+            except TelegramAPIError as e:
+                # Retrying as text only helps when the image is the problem, not the chat.
+                if "chat not found" in str(e).lower():
+                    raise
+                log.warning("photo rejected (%s), sending as text: %s", e.message, item["image"])
         await bot.send_message(chat, body[:4096], disable_web_page_preview=False)
 
 stats = {"last_run": None, "published": 0, "errors": 0}
@@ -185,6 +189,9 @@ async def run_once(bot: Bot) -> int:
             mark(item["link"])  # only after a successful post, so failures retry next run
             n += 1
             await asyncio.sleep(POST_DELAY)
+        except TelegramAPIError as e:
+            stats["errors"] += 1
+            log.error("telegram rejected %s: %s", item["link"], e.message)  # no traceback, cause is the API reply
         except Exception:
             stats["errors"] += 1
             log.exception("item failed: %s", item["link"])
@@ -210,6 +217,21 @@ async def cmd_now(m: Message, bot: Bot):
 async def cmd_status(m: Message):
     await m.answer(f"Last run: {stats['last_run']}\nPublished: {stats['published']}\nErrors: {stats['errors']}")
 
+async def check_channels(bot: Bot) -> None:
+    """Fail fast on unreachable channels instead of burning LLM credits per item."""
+    me = await bot.get_me()
+    for chat in CHANNELS:
+        try:
+            info = await bot.get_chat(chat)
+        except TelegramAPIError as e:
+            sys.exit(
+                f"Cannot reach channel {chat!r}: {e.message}\n"
+                f"  - numeric IDs must look like -1001234567890 (not 1234567890)\n"
+                f"  - add @{me.username} to the channel as admin with 'Post Messages'\n"
+                f"  - private channels have no @username; use the numeric ID"
+            )
+        log.info("channel ok: %s (%s)", info.title or chat, chat)
+
 async def loop(bot: Bot):
     while True:
         try:
@@ -221,6 +243,7 @@ async def loop(bot: Bot):
 async def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     bot = Bot(BOT_TOKEN)
+    await check_channels(bot)
     asyncio.create_task(loop(bot))
     await dp.start_polling(bot)
 
