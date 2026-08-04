@@ -1,0 +1,40 @@
+name: ChannelUp RSS Poster
+
+on:
+  schedule:
+    # Runs every 30 minutes. Adjust as needed.
+    - cron: '*/30 * * * *'
+  workflow_dispatch: # Allows manual trigger from the GitHub Actions tab
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          
+      - name: Run ChannelUp Cron
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          TARGET_CHANNEL_IDS: ${{ secrets.TARGET_CHANNEL_IDS }}
+          RSS_SOURCES: ${{ secrets.RSS_SOURCES }}
+          ADMIN_USER_IDS: ${{ secrets.ADMIN_USER_IDS }}
+          LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          SYSTEM_PROMPT: ${{ secrets.SYSTEM_PROMPT }}
+        run: |
+          python run_cron.py
