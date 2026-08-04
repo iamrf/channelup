@@ -3,24 +3,22 @@
 import asyncio
 import hashlib
 import html
-import io
 import logging
 import os
 import re
-import sqlite3
 import sys
 import time
 from typing import Optional
 
 import aiohttp
 import feedparser
+import psycopg2
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.types import BufferedInputFile, Message
 from dotenv import load_dotenv
 
-# ایمپورت کردن پرامپت از ماژول جدید
 from prompts import DEFAULT_PROMPT
 
 load_dotenv()
@@ -42,7 +40,7 @@ INTERVAL = int(os.getenv("PUBLISH_INTERVAL_MINUTES", "30")) * 60
 POST_DELAY = int(os.getenv("POST_DELAY_SECONDS", "5"))
 MAX_PER_RUN = int(os.getenv("MAX_ITEMS_PER_RUN", "5"))
 LANGUAGE = os.getenv("LANGUAGE", "fa")
-DB_PATH = os.getenv("DB_PATH", "channelup.db")
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT") or (
     open(p, encoding="utf-8").read() if (p := os.getenv("SYSTEM_PROMPT_FILE")) else DEFAULT_PROMPT
@@ -51,21 +49,34 @@ SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT") or (
 if not CHANNELS or not RSS_SOURCES:
     sys.exit("TARGET_CHANNEL_IDS and RSS_SOURCES must be set")
 
-# --- dedup store ------------------------------------------------------------
-db = sqlite3.connect(DB_PATH)
-db.execute("PRAGMA journal_mode=WAL")
-db.execute("CREATE TABLE IF NOT EXISTS published (hash TEXT PRIMARY KEY, ts INTEGER)")
-db.commit()
+if not DATABASE_URL:
+    sys.exit("DATABASE_URL must be set for Neon Database")
+
+# --- dedup store (Neon PostgreSQL) ------------------------------------------
+def init_db():
+    with psycopg2.connect(DATABASE_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS published (
+                    hash TEXT PRIMARY KEY, 
+                    ts INTEGER
+                )
+            """)
+        conn.commit()
+
+init_db()
 
 def _h(key: str) -> str:
     return hashlib.sha256(key.encode()).hexdigest()
 
-def seen(key: str) -> bool:
-    return db.execute("SELECT 1 FROM published WHERE hash=?", (_h(key),)).fetchone() is not None
-
 def mark(key: str) -> None:
-    db.execute("INSERT OR IGNORE INTO published VALUES (?,?)", (_h(key), int(time.time())))
-    db.commit()
+    with psycopg2.connect(DATABASE_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO published (hash, ts) VALUES (%s, %s) ON CONFLICT (hash) DO NOTHING",
+                (_h(key), int(time.time()))
+            )
+        conn.commit()
 
 # --- fetch ------------------------------------------------------------------
 TAGS = re.compile(r"<[^>]+>")
@@ -86,7 +97,6 @@ def image_of(entry) -> Optional[str]:
     return None
 
 def parse_feed(source: str) -> list[dict]:
-    """Blocking, runs in a worker thread. Must NOT touch the sqlite connection."""
     out = []
     parsed = feedparser.parse(source)
     for e in parsed.entries:
@@ -111,16 +121,25 @@ def fetch_all() -> list[dict]:
             log.exception("fetch failed: %s", url)
     return items
 
-def select_new(items: list[dict]) -> list[dict]:
-    """Event-loop thread only (reads DB). Also drops links duplicated across feeds."""
+def fetch_and_filter() -> list[dict]:
+    """Blocking function to fetch RSS and check Neon DB safely in a thread."""
+    items = fetch_all()
     fresh, batch = [], set()
-    for i in items:
-        if i["link"] in batch or seen(i["link"]):
-            continue
-        batch.add(i["link"])
-        fresh.append(i)
-        if len(fresh) >= MAX_PER_RUN:
-            break
+    
+    with psycopg2.connect(DATABASE_URL) as conn:
+        with conn.cursor() as cur:
+            for i in items:
+                if i["link"] in batch:
+                    continue
+                
+                cur.execute("SELECT 1 FROM published WHERE hash=%s", (_h(i["link"]),))
+                if cur.fetchone() is not None:
+                    continue
+                
+                batch.add(i["link"])
+                fresh.append(i)
+                if len(fresh) >= MAX_PER_RUN:
+                    break
     return fresh
 
 # --- LLM --------------------------------------------------------------------
@@ -137,7 +156,7 @@ async def rewrite(session: aiohttp.ClientSession, item: dict) -> str:
             "contents": [{"role": "user", "parts": [{"text": user}]}],
         }
         pick = lambda d: d["candidates"][0]["content"]["parts"][0]["text"]
-    else:  # openai / deepseek / openrouter — OpenAI-compatible
+    else:
         base = LLM_BASE or {
             "openai": "https://api.openai.com/v1",
             "deepseek": "https://api.deepseek.com/v1",
@@ -192,9 +211,7 @@ async def fetch_image_bytes(session: aiohttp.ClientSession, url: str) -> Optiona
     return None
 
 async def publish(bot: Bot, session: aiohttp.ClientSession, item: dict, text: str) -> None:
-    # حذف تگ‌های غیرمجازی که ممکن است هوش مصنوعی تولید کند
     safe_text = text.replace("<p>", "").replace("</p>", "\n\n").replace("<br>", "\n").replace("<br/>", "\n")
-    
     body = f"{safe_text}\n\n🔗 <a href=\"{item['link']}\">منبع خبر</a>"
 
     for chat in CHANNELS:
@@ -224,7 +241,7 @@ async def publish(bot: Bot, session: aiohttp.ClientSession, item: dict, text: st
 stats = {"last_run": None, "published": 0, "errors": 0}
 
 async def run_once(bot: Bot) -> int:
-    items = select_new(await asyncio.to_thread(fetch_all))
+    items = await asyncio.to_thread(fetch_and_filter)
     if not items:
         log.info("No new items found")
         return 0
@@ -235,7 +252,7 @@ async def run_once(bot: Bot) -> int:
             try:
                 rewritten_text = await rewrite(session, item)
                 await publish(bot, session, item, rewritten_text)
-                mark(item["link"])
+                await asyncio.to_thread(mark, item["link"])
                 n += 1
                 await asyncio.sleep(POST_DELAY)
             except TelegramAPIError as e:
