@@ -3,19 +3,25 @@
 import asyncio
 import hashlib
 import html
+import io
 import logging
 import os
 import re
 import sqlite3
 import sys
 import time
+from typing import Optional
 
+import aiohttp
 import feedparser
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import BufferedInputFile, Message
 from dotenv import load_dotenv
+
+# ایمپورت کردن پرامپت از ماژول جدید
+from prompts import DEFAULT_PROMPT
 
 load_dotenv()
 log = logging.getLogger("channelup")
@@ -35,16 +41,9 @@ LLM_BASE = os.getenv("LLM_API_BASE_URL", "").rstrip("/")
 INTERVAL = int(os.getenv("PUBLISH_INTERVAL_MINUTES", "30")) * 60
 POST_DELAY = int(os.getenv("POST_DELAY_SECONDS", "5"))
 MAX_PER_RUN = int(os.getenv("MAX_ITEMS_PER_RUN", "5"))
-LANGUAGE = os.getenv("LANGUAGE", "en")
+LANGUAGE = os.getenv("LANGUAGE", "fa")
 DB_PATH = os.getenv("DB_PATH", "channelup.db")
 
-DEFAULT_PROMPT = """You are a professional news editor for a Telegram channel.
-Rewrite the article below into an engaging original Telegram post.
-- Write in {language}
-- 2-3 concise paragraphs, journalistic tone
-- Add relevant emojis and 3-5 hashtags at the end
-- Plain text only: never use *, _, `, [, ] or any Markdown
-- Under 3000 characters"""
 SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT") or (
     open(p, encoding="utf-8").read() if (p := os.getenv("SYSTEM_PROMPT_FILE")) else DEFAULT_PROMPT
 )
@@ -75,7 +74,7 @@ WS = re.compile(r"[ \t]{2,}")
 def clean(raw: str) -> str:
     return WS.sub(" ", html.unescape(TAGS.sub(" ", raw or ""))).strip()
 
-def image_of(entry) -> str | None:
+def image_of(entry) -> Optional[str]:
     for m in entry.get("media_content", []) + entry.get("media_thumbnail", []):
         if m.get("url"):
             return m["url"]
@@ -89,7 +88,8 @@ def image_of(entry) -> str | None:
 def parse_feed(source: str) -> list[dict]:
     """Blocking, runs in a worker thread. Must NOT touch the sqlite connection."""
     out = []
-    for e in feedparser.parse(source).entries:
+    parsed = feedparser.parse(source)
+    for e in parsed.entries:
         link = e.get("link") or e.get("id")
         if not link:
             continue
@@ -124,120 +124,183 @@ def select_new(items: list[dict]) -> list[dict]:
     return fresh
 
 # --- LLM --------------------------------------------------------------------
-# ponytail: single retry-free-ish loop; if you need per-provider tuning, split later.
-async def rewrite(session, item: dict) -> str:
+async def rewrite(session: aiohttp.ClientSession, item: dict) -> str:
     user = f"Title: {item['title']}\n\n{item['text']}\n\nSource: {item['link']}"
     system = SYSTEM_PROMPT.format(language=LANGUAGE)
+    
     if PROVIDER == "gemini":
         base = LLM_BASE or "https://generativelanguage.googleapis.com/v1beta"
         url = f"{base}/models/{LLM_MODEL}:generateContent"
-        headers = {"x-goog-api-key": LLM_KEY}
+        headers = {"x-goog-api-key": LLM_KEY, "Content-Type": "application/json"}
         payload = {
             "systemInstruction": {"parts": [{"text": system}]},
             "contents": [{"role": "user", "parts": [{"text": user}]}],
         }
         pick = lambda d: d["candidates"][0]["content"]["parts"][0]["text"]
-    else:  # openai / deepseek / openrouter — all OpenAI-compatible
+    else:  # openai / deepseek / openrouter — OpenAI-compatible
         base = LLM_BASE or {
             "openai": "https://api.openai.com/v1",
             "deepseek": "https://api.deepseek.com/v1",
             "openrouter": "https://openrouter.ai/api/v1",
-        }[PROVIDER]
+        }.get(PROVIDER, "https://api.openai.com/v1")
+        
         url = f"{base}/chat/completions"
-        headers = {"Authorization": f"Bearer {LLM_KEY}"}
-        payload = {"model": LLM_MODEL, "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ]}
+        headers = {
+            "Authorization": f"Bearer {LLM_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": LLM_MODEL,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ]
+        }
         pick = lambda d: d["choices"][0]["message"]["content"]
 
     status = None
     for attempt in range(3):
-        async with session.post(url, json=payload, headers=headers) as r:
-            status = r.status
-            if status in (429, 500, 502, 503):
-                await asyncio.sleep(2 ** attempt * 5)
-                continue
-            r.raise_for_status()
-            return pick(await r.json()).strip()
+        try:
+            async with session.post(url, json=payload, headers=headers, timeout=30) as r:
+                status = r.status
+                if status in (429, 500, 502, 503, 504):
+                    await asyncio.sleep(2 ** attempt * 5)
+                    continue
+                r.raise_for_status()
+                data = await r.json()
+                return pick(data).strip()
+        except asyncio.TimeoutError:
+            log.warning(f"LLM request timed out (attempt {attempt + 1})")
+            await asyncio.sleep(2 ** attempt * 3)
+        except Exception as e:
+            if attempt == 2:
+                raise e
+            await asyncio.sleep(2 ** attempt * 3)
+            
     raise RuntimeError(f"LLM unavailable after retries (HTTP {status})")
 
-# --- publish ----------------------------------------------------------------
-async def publish(bot: Bot, item: dict, text: str) -> None:
-    body = f"{text}\n\n🔗 {item['link']}"
+# --- publish helpers --------------------------------------------------------
+async def fetch_image_bytes(session: aiohttp.ClientSession, url: str) -> Optional[bytes]:
+    try:
+        async with session.get(url, timeout=10) as resp:
+            if resp.status == 200:
+                content_type = resp.headers.get("Content-Type", "")
+                if content_type.startswith("image/") or url.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                    return await resp.read()
+    except Exception as e:
+        log.warning("Failed to download image %s: %s", url, e)
+    return None
+
+async def publish(bot: Bot, session: aiohttp.ClientSession, item: dict, text: str) -> None:
+    # حذف تگ‌های غیرمجازی که ممکن است هوش مصنوعی تولید کند
+    safe_text = text.replace("<p>", "").replace("</p>", "\n\n").replace("<br>", "\n").replace("<br/>", "\n")
+    
+    body = f"{safe_text}\n\n🔗 <a href=\"{item['link']}\">منبع خبر</a>"
+
     for chat in CHANNELS:
+        sent_with_photo = False
+        
         if item["image"]:
-            try:
-                await bot.send_photo(chat, item["image"], caption=body[:1024])
-                continue
-            except TelegramAPIError as e:
-                # Retrying as text only helps when the image is the problem, not the chat.
-                if "chat not found" in str(e).lower():
-                    raise
-                log.warning("photo rejected (%s), sending as text: %s", e.message, item["image"])
-        await bot.send_message(chat, body[:4096], disable_web_page_preview=False)
+            img_bytes = await fetch_image_bytes(session, item["image"])
+            if img_bytes:
+                try:
+                    if len(body) <= 1024:
+                        photo_file = BufferedInputFile(img_bytes, filename="image.jpg")
+                        await bot.send_photo(chat, photo_file, caption=body, parse_mode="HTML")
+                        sent_with_photo = True
+                    else:
+                        photo_file = BufferedInputFile(img_bytes, filename="image.jpg")
+                        await bot.send_photo(chat, photo_file)
+                        await bot.send_message(chat, body[:4096], parse_mode="HTML", disable_web_page_preview=True)
+                        sent_with_photo = True
+                except TelegramAPIError as e:
+                    if "chat not found" in str(e).lower():
+                        raise
+                    log.warning("Photo sending failed (%s), sending as text", e.message)
+
+        if not sent_with_photo:
+            await bot.send_message(chat, body[:4096], parse_mode="HTML", disable_web_page_preview=False)
 
 stats = {"last_run": None, "published": 0, "errors": 0}
 
 async def run_once(bot: Bot) -> int:
     items = select_new(await asyncio.to_thread(fetch_all))
-    session = await bot.session.create_session()
+    if not items:
+        log.info("No new items found")
+        return 0
+
     n = 0
-    for item in items:
-        try:
-            await publish(bot, item, await rewrite(session, item))
-            mark(item["link"])  # only after a successful post, so failures retry next run
-            n += 1
-            await asyncio.sleep(POST_DELAY)
-        except TelegramAPIError as e:
-            stats["errors"] += 1
-            log.error("telegram rejected %s: %s", item["link"], e.message)  # no traceback, cause is the API reply
-        except Exception:
-            stats["errors"] += 1
-            log.exception("item failed: %s", item["link"])
-    stats["last_run"], stats["published"] = time.strftime("%Y-%m-%d %H:%M:%S"), stats["published"] + n
-    log.info("run done: %d/%d published", n, len(items))
+    async with aiohttp.ClientSession() as session:
+        for item in items:
+            try:
+                rewritten_text = await rewrite(session, item)
+                await publish(bot, session, item, rewritten_text)
+                mark(item["link"])
+                n += 1
+                await asyncio.sleep(POST_DELAY)
+            except TelegramAPIError as e:
+                stats["errors"] += 1
+                log.error("Telegram API error for %s: %s", item["link"], e.message)
+            except Exception:
+                stats["errors"] += 1
+                log.exception("Item failed: %s", item["link"])
+                
+    stats["last_run"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    stats["published"] += n
+    log.info("Run completed: %d/%d published", n, len(items))
     return n
 
-# --- bot --------------------------------------------------------------------
+# --- bot handlers -----------------------------------------------------------
 dp = Dispatcher()
 admin = F.from_user.id.in_(ADMINS)
 
 @dp.message(Command("start"), admin)
 async def cmd_start(m: Message):
-    await m.answer(f"ChannelUp running.\nSources: {len(RSS_SOURCES)}\nChannels: {len(CHANNELS)}\n"
-                   f"Interval: {INTERVAL // 60}m\nProvider: {PROVIDER}/{LLM_MODEL}")
+    await m.answer(
+        f"<b>ChannelUp Bot Active</b>\n\n"
+        f"<b>Sources:</b> {len(RSS_SOURCES)}\n"
+        f"<b>Channels:</b> {len(CHANNELS)}\n"
+        f"<b>Interval:</b> {INTERVAL // 60}m\n"
+        f"<b>LLM:</b> {PROVIDER}/{LLM_MODEL}",
+        parse_mode="HTML"
+    )
 
 @dp.message(Command("publish_now"), admin)
 async def cmd_now(m: Message, bot: Bot):
-    await m.answer("Fetching…")
-    await m.answer(f"Published {await run_once(bot)} item(s).")
+    await m.answer("Fetching & processing feeds…")
+    count = await run_once(bot)
+    await m.answer(f"Successfully published <b>{count}</b> item(s).", parse_mode="HTML")
 
 @dp.message(Command("status"), admin)
 async def cmd_status(m: Message):
-    await m.answer(f"Last run: {stats['last_run']}\nPublished: {stats['published']}\nErrors: {stats['errors']}")
+    await m.answer(
+        f"<b>ChannelUp Status</b>\n\n"
+        f"<b>Last Run:</b> {stats['last_run'] or 'Never'}\n"
+        f"<b>Total Published:</b> {stats['published']}\n"
+        f"<b>Errors Encountered:</b> {stats['errors']}",
+        parse_mode="HTML"
+    )
 
 async def check_channels(bot: Bot) -> None:
-    """Fail fast on unreachable channels instead of burning LLM credits per item."""
     me = await bot.get_me()
     for chat in CHANNELS:
         try:
             info = await bot.get_chat(chat)
+            log.info("Channel verified: %s (%s)", info.title or chat, chat)
         except TelegramAPIError as e:
             sys.exit(
                 f"Cannot reach channel {chat!r}: {e.message}\n"
-                f"  - numeric IDs must look like -1001234567890 (not 1234567890)\n"
-                f"  - add @{me.username} to the channel as admin with 'Post Messages'\n"
-                f"  - private channels have no @username; use the numeric ID"
+                f"  - Numeric IDs must look like -1001234567890 (not 1234567890)\n"
+                f"  - Add @{me.username} to the channel as admin with 'Post Messages' rights\n"
+                f"  - Private channels have no @username; use the numeric ID"
             )
-        log.info("channel ok: %s (%s)", info.title or chat, chat)
 
 async def loop(bot: Bot):
     while True:
         try:
             await run_once(bot)
         except Exception:
-            log.exception("run_once crashed")
+            log.exception("Loop iteration crashed")
         await asyncio.sleep(INTERVAL)
 
 async def main():
