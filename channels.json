@@ -1,0 +1,32 @@
+{
+  "language": "Persian فارسی",
+  "max_items_per_run": 5,
+  "post_delay_seconds": 15,
+  "channels": [
+    {
+      "name": "ChannelUP",
+      "telegram_target": "@channelupx",
+      "rss_sources": [
+        "https://techcrunch.com/feed",
+        "https://feeds.feedburner.com/TechViral",
+        "https://www.theverge.com/rss/full.xml",
+        "https://www.techspot.com/backend.xml"
+      ],
+      "prompt_addon": "Coverage should emphasize AI and developer tooling angles.",
+      "language": "Persian فارسی",
+      "max_items_per_run": 3,
+      "post_delay_seconds": 20
+    },
+    {
+      "name": "GigUP",
+      "telegram_target": "@gigup_net",
+      "rss_sources": [
+        "https://www.zoomit.ir/feed/",
+        "https://www.asriran.com/fa/rss/allnews"
+      ],
+      "prompt_addon": "Short daily briefing tone. Two punchy paragraphs max.",
+      "language": "en",
+      "post_delay_seconds": 20
+    }
+  ]
+}
