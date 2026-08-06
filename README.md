@@ -91,7 +91,7 @@ Two supported targets — **GitHub Actions (serverless) or Ubuntu self-host +
 GitHub Actions CD** — plus the test workflow and a shared one-shot cron runner.
 See [DEPLOY.md](DEPLOY.md). **Enable only one scheduler.**
 
-## Test
+## Test 
 
 ```bash
 python -m pytest -q
