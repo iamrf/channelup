@@ -14,9 +14,9 @@ GitHub Actions. This document covers both supported runtime targets.
 | Commands `/publish_now` | no | yes (`channelup.service`) |
 | CI on push | partially | fully (tests + auto-deploy) |
 
-> **Do not enable both** — you would double-post. If you choose the Ubuntu path,
-> leave the repository variable `CRON_ENABLED` unset so `cron.yml` is skipped.
-> If you choose serverless, set `CRON_ENABLED` (see below).
+> **Do not enable both** — you would double-post. Pick serverless **or** the
+> Ubuntu timer/service and disable the other. If you add the Ubuntu box and its
+> systemd timer later, stop `cron.yml` (or remove it) first.
 
 ## Code layout
 
@@ -39,7 +39,7 @@ deploy/
 .github/workflows/
   ci.yml                  # tests on push/PR
   deploy.yml              # CD: run tests, sync repo, call setup.sh
-  cron.yml                # serverless cron (opt-in via CRON_ENABLED=true)
+  cron.yml                # serverless scheduled cron
 ```
 
 ## Configuration
@@ -91,9 +91,7 @@ deploy/
    `LLM_PROVIDER`, `LLM_MODEL` (and `LLM_API_BASE_URL` if you use one).
 2. Commit a real `channels.json` to the repo (it's non-secret) — `cron.yml` runs
    against the checked-out copy.
-3. Enable the scheduler: set the repository **variable** `CRON_ENABLED=true`
-   (Settings → Secrets and variables → Actions → Variables). The `cron.yml` job is
-   skipped unless this is `true`, so it stays safely off until you opt in.
+3. `cron.yml` runs on schedule and on manual dispatch — no extra toggle needed.
 4. Manually verify once from the Actions tab (`Run workflow` on `cron.yml`), then
    let the `*/30 * * * *` schedule take over.
 

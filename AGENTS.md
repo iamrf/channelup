@@ -85,7 +85,8 @@ Key invariants, do not break them:
 - `ci.yml` — tests on push/PR.
 - `deploy.yml` — on `main`, run tests then `rsync` to the Ubuntu host + `setup.sh`
   (systemd cron timer). Reads `DEPLOY_HOST` / `DEPLOY_USER` / `DEPLOY_SSH_KEY` secrets.
-- `cron.yml` — serverless one-shot, **skipped unless** repo variable `CRON_ENABLED=true`.
+- `cron.yml` — serverless one-shot, runs on `*/30 * * * *` and manual dispatch
+  (disable it if you add the Ubuntu timer to avoid double-posting).
 
 > **Only one scheduler may be active.** The Ubuntu timer (from `setup.sh`) and the
 > `cron.yml` serverless job must not both run, or every item posts twice.
