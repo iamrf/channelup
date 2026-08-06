@@ -1,0 +1,30 @@
+# ChannelUp — always-on polling bot (OPTIONAL).
+# Use THIS or the cron timer (setup.sh), NOT both, to avoid double-posting.
+#
+# Install (set the user first):
+#   sudo cp deploy/channelup.service /etc/systemd/system/channelup.service
+#   sudo $EDITOR /etc/systemd/system/channelup.service   # set User=/Group= to the deploy user
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now channelup.service
+#   journalctl -u channelup -f
+#
+# If you enable this, disable the timer created by setup.sh:
+#   sudo systemctl disable --now channelup-cron.timer
+
+[Unit]
+Description=ChannelUp polling bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/channelup
+ExecStart=/opt/channelup/.venv/bin/python -m channelup
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

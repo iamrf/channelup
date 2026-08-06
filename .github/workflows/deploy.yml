@@ -1,0 +1,68 @@
+name: Deploy to Ubuntu
+
+# Continuous deployment: on every push to `main`, run the test gate, then sync
+# the repo to the Ubuntu server and (re)install the systemd cron/CI setup.
+#
+# Required repository secrets:
+#   DEPLOY_HOST     — server IP or hostname (e.g. 1.2.3.4)
+#   DEPLOY_USER     — SSH user that owns /opt/channelup (e.g. ubuntu)
+#   DEPLOY_SSH_KEY  — private key the GitHub runner uses to SSH in (ed25519)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  APP_DIR: /opt/channelup
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run tests
+        run: python -m pytest -q
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> "$HOME/.ssh/known_hosts" 2>/dev/null
+
+      - name: Sync code to server
+        run: |
+          rsync -az --delete \
+            --exclude '.git' \
+            --exclude '.gitignore' \
+            --exclude '.github' \
+            --exclude '.venv' \
+            --exclude '__pycache__' \
+            --exclude '.venv/' \
+            --exclude '*.pyc' \
+            --exclude '.env' \
+            --exclude 'channels.json' \
+            ./ "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ env.APP_DIR }}/"
+
+      - name: Run server setup (venv + systemd timer)
+        run: |
+          ssh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "APP_DIR=${{ env.APP_DIR }} APP_USER=${{ secrets.DEPLOY_USER }} bash ${{ env.APP_DIR }}/deploy/setup.sh silent"
+
+      - name: Report deployed version
+        run: echo "Deployed commit ${GITHUB_SHA} to ${{ secrets.DEPLOY_HOST }}:${{ env.APP_DIR }}"

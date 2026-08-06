@@ -1,4 +1,8 @@
-"""Prompts configuration for ChannelUp."""
+"""Prompt configuration for ChannelUp.
+
+DEFAULT_PROMPT is the base editorial rewrite prompt. It is combined with each
+channel's optional ``prompt_addon`` at runtime (see ``config.build_system_prompt``).
+"""
 
 DEFAULT_PROMPT = """You are a professional news editor for a Telegram channel.
 Rewrite the article below into an engaging original Telegram post.

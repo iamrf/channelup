@@ -1,0 +1,28 @@
+{
+  "language": "fa",
+  "max_items_per_run": 5,
+  "post_delay_seconds": 5,
+  "channels": [
+    {
+      "name": "tech",
+      "telegram_target": "-1001234567890",
+      "rss_sources": [
+        "https://www.theverge.com/rss/index.xml",
+        "https://feeds.arstechnica.com/arstechnica/index"
+      ],
+      "prompt_addon": "Coverage should emphasize AI and developer tooling angles.",
+      "language": "en",
+      "max_items_per_run": 3,
+      "post_delay_seconds": 7
+    },
+    {
+      "name": "markets",
+      "telegram_target": "@markets_public_channel",
+      "rss_sources": [
+        "https://feeds.bbci.co.uk/news/business/rss.xml"
+      ],
+      "prompt_addon": "Short daily briefing tone. Two punchy paragraphs max.",
+      "language": "en"
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+name: ChannelUp Cron (serverless)
+
+# One-shot cron channel run on a GitHub-hosted runner. Posts to Telegram
+# directly, so this needs the bot/LLM/DB secrets stored as GitHub secrets.
+#
+# IMPORTANT: only enable ONE scheduler. To run this serverless path instead of
+# the Ubuntu self-host cron, set a repository VARIABLE  CRON_ENABLED=true
+# (Settings -> Secrets and variables -> Actions -> Variables). If it is unset
+# (or 'false'), this job is skipped so you don't double-post.
+#
+# Required actions secrets:
+#   TELEGRAM_BOT_TOKEN, DATABASE_URL, LLM_API_KEY, LLM_PROVIDER, LLM_MODEL
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # every 30 min
+  workflow_dispatch:
+
+jobs:
+  run-cron:
+    if: vars.CRON_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run ChannelUp one-shot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          LLM_API_BASE_URL: ${{ secrets.LLM_API_BASE_URL }}
+        run: python run_cron.py
