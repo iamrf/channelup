@@ -1,13 +1,18 @@
 """Async persistence for ChannelUp.
 
-Writes go to Neon PostgreSQL through asyncpg (a connection pool). The ``Store``
-protocol keeps tests hermetic with ``MemoryStore``. Two responsibilities:
+Writes go to Neon PostgreSQL through asyncpg (a connection pool). ``MemoryStore``
+stays hermetic for tests. Two responsibilities:
 
 - **Dedup** — a `(channel, link)` hash in the ``published`` table. ``try_mark_seen``
   is atomic (``INSERT ... ON CONFLICT DO NOTHING``) so the same item is only ever
   produced once, even with concurrent producers.
 - **Curate queue** — ``curate_items`` accumulates raw items for ``curate`` feeds
-  until the scheduled job claims and processes a batch.
+  until the scheduled job claims and processes a batch. Rows are unique per
+  ``(channel, link)`` so retried inserts can never double-queue (→ double-post).
+
+Neon is serverless: idle compute can drop a pooled connection mid-query. All
+operations run through ``_run`` which retries transient connection errors by
+re-acquiring from the pool (asyncpg replaces the broken connection).
 """
 from __future__ import annotations
 
@@ -15,13 +20,28 @@ import asyncio
 import hashlib
 import time
 from dataclasses import dataclass
-from typing import Optional, Protocol
+from typing import Awaitable, Callable, Optional, Protocol
 
 import asyncpg
+from asyncpg import exceptions as apg_exc
 
 MODE_RAW = "raw"
 MODE_CUSTOM = "custom_llm"
 MODE_CURATE = "curate"
+
+# Errors that mean "the connection died mid-query" (or the pool/connect failed):
+# retrying by re-acquiring from the pool is safe and expected to succeed.
+_RETRYABLE = (
+    apg_exc.PostgresConnectionError,
+    apg_exc.ConnectionDoesNotExistError,
+    apg_exc.ConnectionFailureError,
+    apg_exc.InternalClientError,
+    apg_exc.InterfaceError,
+    apg_exc.TooManyConnectionsError,
+    OSError,
+    asyncio.TimeoutError,
+)
+_RETRY_ATTEMPTS = 4
 
 
 def hash_key(channel: str, link: str) -> str:
@@ -76,6 +96,8 @@ class MemoryStore:
 
     async def enqueue_curate(self, channel: str, feed_url: str, item: dict) -> None:
         async with self._lock:
+            if any(c["channel"] == channel and c["link"] == item["link"] for c in self._curate):
+                return  # mirror the DB unique(channel, link) behaviour
             self._curate.append({
                 "id": self._next_id,
                 "channel": channel,
@@ -107,7 +129,7 @@ class MemoryStore:
 
 
 class PostgresStore:
-    """Neon PostgreSQL backed store (asyncpg pool)."""
+    """Neon PostgreSQL backed store (asyncpg pool) with transient-connection retry."""
 
     def __init__(self, url: str) -> None:
         if not url:
@@ -117,24 +139,35 @@ class PostgresStore:
 
     async def init(self) -> None:
         self.pool = await asyncpg.create_pool(self.url, min_size=1, max_size=5)
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                "CREATE TABLE IF NOT EXISTS published ("
-                " hash TEXT PRIMARY KEY, channel TEXT NOT NULL, mode TEXT NOT NULL,"
-                " ts BIGINT NOT NULL)"
-            )
-            # Idempotent migration: earlier ChannelUp versions created `published`
-            # without these columns; add anything missing so the new schema works
-            # on pre-existing Neon databases.
-            await conn.execute("ALTER TABLE published ADD COLUMN IF NOT EXISTS channel TEXT")
-            await conn.execute("ALTER TABLE published ADD COLUMN IF NOT EXISTS mode TEXT")
-            await conn.execute("ALTER TABLE published ADD COLUMN IF NOT EXISTS ts BIGINT")
-            await conn.execute(
-                "CREATE TABLE IF NOT EXISTS curate_items ("
-                " id BIGSERIAL PRIMARY KEY, channel TEXT NOT NULL, feed_url TEXT NOT NULL,"
-                " link TEXT NOT NULL, title TEXT NOT NULL, text TEXT NOT NULL, image TEXT,"
-                " created_ts BIGINT NOT NULL, processed_ts BIGINT)"
-            )
+        await self._run_inner("init")
+
+    async def _run_inner(self, _tag: str = ""):
+        # init runs schema DDL; retry transient drops as well.
+        last = None
+        for attempt in range(_RETRY_ATTEMPTS):
+            try:
+                async with self.pool.acquire() as conn:
+                    await conn.execute(
+                        "CREATE TABLE IF NOT EXISTS published ("
+                        " hash TEXT PRIMARY KEY, channel TEXT NOT NULL, mode TEXT NOT NULL,"
+                        " ts BIGINT NOT NULL)"
+                    )
+                    # Idempotent migration for pre-existing installs.
+                    await conn.execute("ALTER TABLE published ADD COLUMN IF NOT EXISTS channel TEXT")
+                    await conn.execute("ALTER TABLE published ADD COLUMN IF NOT EXISTS mode TEXT")
+                    await conn.execute("ALTER TABLE published ADD COLUMN IF NOT EXISTS ts BIGINT")
+                    await conn.execute(
+                        "CREATE TABLE IF NOT EXISTS curate_items ("
+                        " id BIGSERIAL PRIMARY KEY, channel TEXT NOT NULL, feed_url TEXT NOT NULL,"
+                        " link TEXT NOT NULL, title TEXT NOT NULL, text TEXT NOT NULL, image TEXT,"
+                        " created_ts BIGINT NOT NULL, processed_ts BIGINT,"
+                        " UNIQUE (channel, link))"
+                    )
+                return
+            except _RETRYABLE as e:
+                last = e
+                await asyncio.sleep(0.5 * (attempt + 1))
+        raise last
 
     async def close(self) -> None:
         if self.pool is not None:
@@ -142,7 +175,7 @@ class PostgresStore:
             self.pool = None
 
     async def try_mark_seen(self, channel: str, link: str, mode: str = MODE_CUSTOM) -> bool:
-        async with self.pool.acquire() as conn:
+        async def op(conn: asyncpg.Connection) -> bool:
             res = await conn.execute(
                 "INSERT INTO published (hash, channel, mode, ts) VALUES ($1,$2,$3,$4) "
                 "ON CONFLICT (hash) DO NOTHING",
@@ -150,17 +183,21 @@ class PostgresStore:
             )
             return "INSERT 0 1" in res
 
+        return await self._with_retry(op)
+
     async def enqueue_curate(self, channel: str, feed_url: str, item: dict) -> None:
-        async with self.pool.acquire() as conn:
+        async def op(conn: asyncpg.Connection) -> None:
             await conn.execute(
                 "INSERT INTO curate_items (channel, feed_url, link, title, text, image, created_ts) "
-                "VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                "VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (channel, link) DO NOTHING",
                 channel, feed_url, item["link"], item.get("title", ""), item.get("text", ""),
                 item.get("image"), int(time.time()),
             )
 
+        await self._with_retry(op)
+
     async def claim_curate(self, channel: str, limit: int) -> list[CurateItem]:
-        async with self.pool.acquire() as conn:
+        async def op(conn: asyncpg.Connection) -> list[CurateItem]:
             rows = await conn.fetch(
                 "SELECT id, channel, feed_url, link, title, text, image FROM curate_items "
                 "WHERE channel = $1 AND processed_ts IS NULL ORDER BY created_ts, id LIMIT $2",
@@ -172,11 +209,29 @@ class PostgresStore:
                 for r in rows
             ]
 
+        return await self._with_retry(op)
+
     async def mark_curate_processed(self, ids: list[int]) -> None:
         if not ids:
             return
-        async with self.pool.acquire() as conn:
+
+        async def op(conn: asyncpg.Connection) -> None:
             await conn.execute(
                 "UPDATE curate_items SET processed_ts = $1 WHERE id = ANY($2::bigint[])",
                 int(time.time()), ids,
             )
+
+        await self._with_retry(op)
+
+    async def _with_retry(self, op: Callable[[asyncpg.Connection], Awaitable]):
+        """Run ``op`` against the pool, retrying transient connection errors."""
+        last: Optional[BaseException] = None
+        for attempt in range(_RETRY_ATTEMPTS):
+            try:
+                async with self.pool.acquire() as conn:
+                    return await op(conn)
+            except _RETRYABLE as e:
+                last = e
+                await asyncio.sleep(0.5 * (attempt + 1))
+        assert last is not None
+        raise last

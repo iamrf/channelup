@@ -13,6 +13,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Cancel an in-flight deploy when a newer commit lands on main.
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
 env:
   APP_DIR: /opt/channelup
 

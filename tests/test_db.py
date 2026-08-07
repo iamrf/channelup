@@ -120,3 +120,48 @@ def test_postgres_store_init_migrates_existing_schema(monkeypatch):
         assert any(f"ALTER TABLE published ADD COLUMN IF NOT EXISTS {join}"
                    in s for s in executed), f"missing ALTER for {join}"
     assert any(s.startswith("CREATE TABLE IF NOT EXISTS curate_items") for s in executed)
+    # fresh curate table carries a unique(channel, link) so retried enqueues can't
+    # double-queue an item (prevents double-post).
+    assert any("UNIQUE (channel, link)" in s for s in executed)
+
+
+def test_postgres_store_retries_transient_connection_errors():
+    """_with_retry re-acquires from the pool after a mid-query connection drop."""
+    from asyncpg import exceptions as apg_exc
+
+    class Conn:
+        def __init__(self):
+            self.calls = 0
+
+        async def doit(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise apg_exc.ConnectionDoesNotExistError("connection was closed in the middle")
+            return "ok"
+
+    class FakeAcquire:
+        def __init__(self, conn):
+            self.conn = conn
+
+        async def __aenter__(self):
+            return self.conn
+
+        async def __aexit__(self, *a):
+            return False
+
+    class FakePool:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def acquire(self):
+            return FakeAcquire(self.conn)
+
+    store = PostgresStore("postgresql://x")
+    conn = Conn()
+    store.pool = FakePool(conn)
+
+    async def op(c):
+        return await c.doit()
+
+    assert run(store._with_retry(op)) == "ok"
+    assert conn.calls == 2, "operation retried after the transient drop"

@@ -111,9 +111,16 @@ supports JSONC: `//` comments and trailing commas are allowed.
 
 ## Deploy & CI/CD
 
-Two supported targets — **GitHub Actions (serverless) or Ubuntu self-host +
-GitHub Actions CD** — plus the test workflow and a shared one-shot sweep runner.
-See [DEPLOY.md](DEPLOY.md). **Enable only one scheduler.**
+Three supported targets (pick **one** scheduler, or every item posts twice):
+
+1. **GitHub Actions (serverless)** — `cron.yml` runs `run_cron.py` every 30 min.
+2. **Ubuntu self-host + GitHub Actions CD** — `deploy.yml` auto-deploys on push,
+   `setup.sh` installs a systemd cron timer.
+3. **Render Web Service (manual)** — always-on bot via `deploy/render_server.py`
+   (+ `render.yaml` blueprint).
+
+Full guides for all three — including the manual Render walkthrough — are in
+[DEPLOY.md](DEPLOY.md).
 
 ## Test
 

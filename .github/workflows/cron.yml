@@ -11,6 +11,11 @@ on:
     - cron: '*/30 * * * *'   # every 30 min
   workflow_dispatch:
 
+# Never run two sweeps at once (schedule + manual dispatch can collide).
+concurrency:
+  group: channelup-cron
+  cancel-in-progress: false
+
 jobs:
   run-cron:
     runs-on: ubuntu-latest

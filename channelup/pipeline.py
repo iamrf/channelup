@@ -85,7 +85,7 @@ class Pipeline:
     def _build_raw_text(self, feed: FeedConfig, item: dict) -> str:
         link = feed.target_link or item["link"]
         body = f"{item['title']}\n\n{item['text']}".strip()
-        return f"{body}\n\n🔗 <a href=\"{html.escape(link, quote=True)}\">مشاهده</a>"
+        return f"{body}\n\n🔗 <a href=\"{html.escape(link, quote=True)}\">{link}</a>"
 
     async def fetch_feed_once(self, channel: ChannelConfig, feed: FeedConfig) -> None:
         """Fetch one feed, dedup, and route every new item to the right queue."""

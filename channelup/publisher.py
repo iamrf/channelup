@@ -11,7 +11,7 @@ from aiogram.types import BufferedInputFile
 
 log = logging.getLogger("channelup.publisher")
 
-_SOURCE_LINK = "\n\n🔗 <a href=\"{link}\">منبع خبر</a>"
+_SOURCE_LINK = "\n\n🔗 <a href=\"{link}\">منبع</a>"
 _PHOTO_CAPTION_LIMIT = 1024
 _TEXT_LIMIT = 4096
 

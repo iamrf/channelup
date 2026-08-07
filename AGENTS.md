@@ -46,6 +46,11 @@ Key invariants — do not break them:
   and published.
 - **All I/O is async** via aiohttp / asyncpg; feed parsing runs in a thread
   (`asyncio.to_thread`) because feedparser is synchronous.
+- **Neon is serverless:** its compute can sleep, dropping a pooled connection
+  mid-query. `PostgresStore` retries transient connection errors
+  (`ConnectionDoesNotExistError`, `ConnectionFailureError`, …) by re-acquiring
+  from the pool, and `curate_items` has `UNIQUE (channel, link)` so a retried
+  enqueue can never double-queue an item.
 
 ## File layout
 
@@ -63,6 +68,7 @@ Key invariants — do not break them:
 | `run_cron.py` | one-shot `Pipeline.sweep` (GH cron + systemd timer) |
 | `channels.json.example` / `env.example` | config templates |
 | `deploy/setup.sh`, `deploy/channelup.service` | Ubuntu provisioning |
+| `deploy/render_server.py`, `render.yaml` | Render Web Service entry + Blueprint |
 | `.github/workflows/{ci,deploy,cron}.yml` | tests, Ubuntu CD, serverless cron |
 | `tests/` | pytest suite |
 
@@ -102,6 +108,8 @@ Key invariants — do not break them:
 - `deploy.yml` — on `main`, tests → `rsync` to Ubuntu + `setup.sh` (systemd cron
   timer). Secrets: `DEPLOY_HOST` / `DEPLOY_USER` / `DEPLOY_SSH_KEY`.
 - `cron.yml` — serverless one-shot `run_cron.py` on `*/30 * * * *` + manual dispatch.
+- **Render** — *not* a workflow; it's a manual Web Service deploy via
+  `deploy/render_server.py` + `render.yaml`. See DEPLOY.md Option C.
 
-> **Only one scheduler may be active.** The Ubuntu timer and `cron.yml` must not
-> both run, or every item posts twice.
+> Deploy to **one** target. Running any two schedulers (cron.yml, the Ubuntu timer,
+> or the Render service) at once double-posts every item.

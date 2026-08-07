@@ -1,0 +1,32 @@
+# Render Blueprint — deploy ChannelUp as an always-on Web Service.
+# Deploy via the Render dashboard: "Blueprint" / "Deploy a Blueprint" and point it
+# at this repo. Secrets (marked `sync: false`) are filled in during the first
+# deploy from the dashboard — do NOT commit them.
+#
+# Full manual, click-by-click steps: see DEPLOY.md → "Option C — Render (manual)".
+services:
+  - type: web
+    name: channelup
+    runtime: python
+    region: frankfurt
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python deploy/render_server.py
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: LLM_API_KEY
+        sync: false
+      - key: ADMIN_USER_IDS
+        sync: false
+      - key: LLM_PROVIDER
+        value: gemini
+      - key: LLM_MODEL
+        value: gemini-2.5-flash-lite
+      # Loads channel/feed defs from the committed channels.json:
+      - key: CONFIG_FILE
+        value: channels.json
