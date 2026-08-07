@@ -1,32 +1,57 @@
 {
   "language": "Persian فارسی",
-  "max_items_per_run": 5,
-  "post_delay_seconds": 15,
+  "interval": 300,
+  "telegram_rate_per_minute": 19,
+  "curate_interval_seconds": 1800,
+  "curate_batch_size": 10,
+  "curate_top_n": 5,
   "channels": [
     {
-      "name": "ChannelUP",
+      "name": "channelupx",
       "telegram_target": "@channelupx",
-      "rss_sources": [
-        "https://techcrunch.com/feed",
-        "https://feeds.feedburner.com/TechViral",
-        "https://www.theverge.com/rss/full.xml",
-        "https://www.techspot.com/backend.xml"
-      ],
-      "prompt_addon": "Coverage should emphasize AI and developer tooling angles.",
       "language": "Persian فارسی",
-      "max_items_per_run": 3,
-      "post_delay_seconds": 20
+      "rate_per_minute": 15,
+      "feeds": [
+        {
+          "url": "https://feeds.bbci.co.uk/news/technology/rss.xml",
+          "interval": 60,
+          "mode": "raw",
+          "target_link": "https://t.me/tech_updates"
+        },
+        {
+          "url": "https://www.theverge.com/rss/full.xml",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://feeds.arstechnica.com/arstechnica/index",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://www.theverge.com/rss/full.xml",
+          "interval": 1800,
+          "mode": "curate"
+        }
+      ]
     },
     {
-      "name": "GigUP",
+      "name": "gigup_net",
       "telegram_target": "@gigup_net",
-      "rss_sources": [
-        "https://www.zoomit.ir/feed/",
-        "https://www.asriran.com/fa/rss/allnews"
-      ],
-      "prompt_addon": "Short daily briefing tone. Two punchy paragraphs max.",
-      "language": "en",
-      "post_delay_seconds": 20
+      "language": "English",
+      "feeds": [
+        {
+          "url": "https://www.asriran.com/fa/rss/allnews",
+          "interval": 60,
+          "mode": "raw",
+          "target_link": "https://t.me/tech_updates"
+        },
+        {
+          "url": "https://www.zoomit.ir/feed/",
+          "interval": 1800,
+          "mode": "curate"
+        }
+      ]
     }
   ]
 }
