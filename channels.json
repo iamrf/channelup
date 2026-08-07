@@ -1,53 +1,63 @@
 {
-  "language": "Persian فارسی",
-  "interval": 300,
-  "telegram_rate_per_minute": 19,
-  "curate_interval_seconds": 1800,
-  "curate_batch_size": 10,
-  "curate_top_n": 5,
+  "language": "Persian فارسی",                       
+  "interval": 300,                        
+  "telegram_rate_per_minute": 19,         
+  "curate_interval_seconds": 1800,        
+  "curate_batch_size": 10,                
+  "curate_top_n": 5,                      
+  "llm_queue_size": 256,                  
+  "publish_queue_size": 256,              
+
   "channels": [
     {
-      "name": "channelupx",
-      "telegram_target": "@channelupx",
-      "language": "Persian فارسی",
-      "rate_per_minute": 15,
+      "name": "ChannelUp",                      
+      "telegram_target": "@channelupx", 
+      "channel_prompt": "Coverage should emphasize AI and developer-tooling angles. Always end with 5 hashtags.",
+      "rate_per_minute": 15,               
       "feeds": [
         {
           "url": "https://feeds.bbci.co.uk/news/technology/rss.xml",
-          "interval": 60,
+          "interval": 60,                  
           "mode": "raw",
-          "target_link": "https://t.me/tech_updates"
-        },
-        {
-          "url": "https://www.theverge.com/rss/full.xml",
-          "interval": 1800,
-          "mode": "curate"
+          "target_link": "https://t.me/channelupx"
         },
         {
           "url": "https://feeds.arstechnica.com/arstechnica/index",
-          "interval": 1800,
-          "mode": "curate"
+          "interval": 3600,                
+          "mode": "custom_llm",
+          "custom_prompt": "For this feed, lead with the headline's impact and keep it under 1500 characters. Write in {language}."
         },
         {
           "url": "https://www.theverge.com/rss/full.xml",
           "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://www.wired.com/feed/rss",
+          "interval": 3600,
           "mode": "curate"
         }
       ]
     },
+
     {
-      "name": "gigup_net",
+      "name": "GigUp",
       "telegram_target": "@gigup_net",
-      "language": "English",
+      "language": "English",                       
       "feeds": [
         {
-          "url": "https://www.asriran.com/fa/rss/allnews",
-          "interval": 60,
-          "mode": "raw",
-          "target_link": "https://t.me/tech_updates"
+          "url": "https://feeds.bbci.co.uk/news/business/rss.xml",
+          "interval": 3600,
+          "mode": "custom_llm",
+          "custom_prompt": "Short daily-briefing tone. Two punchy paragraphs max, then 3 hashtags."
         },
         {
-          "url": "https://www.zoomit.ir/feed/",
+          "url": "https://www.asriran.com/fa/rss/allnews",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://www.zoomit.ir/feed",
           "interval": 1800,
           "mode": "curate"
         }
