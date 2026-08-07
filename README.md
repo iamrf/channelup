@@ -62,6 +62,19 @@ python -m channelup
 | `custom_llm` | Rewrites each item with the feed's `custom_prompt` (`{language}` substituted; falls back to the channel default). |
 | `curate` | New items are stored in the DB. Every `curate_interval_seconds`, a batch of `curate_batch_size` is sent to the LLM, which picks the top `curate_top_n` most engaging, rewrites them, and publishes. |
 
+### Prompt layering & JSONC
+
+Each channel has its own `channel_prompt` (its default), an add-on layered on top
+of `channelup/prompts.py`'s `DEFAULT_PROMPT`. When a feed sets `custom_prompt` it
+is layered even higher:
+
+```
+feed.custom_prompt ⊃ channel.channel_prompt ⊃ DEFAULT_PROMPT
+```
+
+Empty layers are skipped and `{language}` is substituted in each layer. `channels.json`
+supports JSONC: `//` comments and trailing commas are allowed.
+
 ### `.env` variables
 
 | Var | Meaning |

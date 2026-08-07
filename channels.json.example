@@ -1,37 +1,90 @@
+// ChannelUp configuration — feeds & channels (non-secret).
+// Copy to `channels.json` and edit. Secrets (bot token, LLM key, Neon URL)
+// stay in `.env` — see `env.example`.
+//
+// Comments (`//` and `/* */`) are allowed here and stripped at load time.
+//
+// ── Prompt layering ─────────────────────────────────────────────────────────
+//   feed.custom_prompt  ⊃  channel.channel_prompt  ⊃  channelup/prompts.py DEFAULT_PROMPT
+// Each layer is optional; empty layers are skipped. `{language}` is substituted
+// in every layer with the channel's `language`.
+//
+// ── Curate mode ────────────────────────────────────────────────────────────
+// All `curate` feeds of one channel share a SINGLE pool: their new items are
+// accumulated together, then one batch is claimed and the LLM picks the top
+// `curate_top_n` across all of them. (Use one channel per editorial voice.)
+
 {
-  "language": "fa",
-  "interval": 300,
-  "telegram_rate_per_minute": 19,
-  "curate_interval_seconds": 1800,
-  "curate_batch_size": 10,
-  "curate_top_n": 5,
+  // ── Global defaults (overridable per channel / per feed) ─────────────────
+  "language": "fa",                       // output language for ALL layers
+  "interval": 300,                        // default feed fetch period, seconds
+  "telegram_rate_per_minute": 19,         // hard cap < Telegram's 20 msg/min per channel
+  "curate_interval_seconds": 1800,        // how often each channel's curate batch runs (30 min)
+  "curate_batch_size": 10,                // how many accumulated items go to the LLM each run
+  "curate_top_n": 5,                      // how many of that batch get picked + published
+  "llm_queue_size": 256,                  // max pending LLM jobs (bounded queue)
+  "publish_queue_size": 256,              // max pending publish jobs (bounded queue)
+
   "channels": [
     {
-      "name": "tech",
-      "telegram_target": "-1001234567890",
-      "language": "en",
-      "rate_per_minute": 15,
+      // ── Channel identity ─────────────────────────────────────────────────
+      "name": "tech",                      // unique ID used in logs + dedup keys
+      "telegram_target": "-1001234567890", // numeric -100… id or @public_name
+      "language": "en",                    // overrides the global default
+
+      // Channel's OWN default prompt: an add-on layered on top of
+      // channelup/prompts.py DEFAULT_PROMPT. Every non-raw item in this channel
+      // is rewritten with this (plus any per-feed custom_prompt).
+      "channel_prompt": "Coverage should emphasize AI and developer-tooling angles. Always end with 5 hashtags.",
+
+      "rate_per_minute": 15,               // optional per-channel Telegram cap (< 20)
+      // "curate_interval_seconds": 1800,  // optional per-channel curate tuning
+      // "curate_batch_size": 10,
+      // "curate_top_n": 5,
+
+      // ── Feeds for this channel ───────────────────────────────────────────
       "feeds": [
         {
+          // ══ raw: NO LLM. Posts the feed's own title/text verbatim ────────
           "url": "https://www.theverge.com/rss/index.xml",
-          "interval": 60,
+          "interval": 60,                  // ≈ real-time (every minute)
           "mode": "raw",
+          // Link to YOUR channel, appended to every raw post:
           "target_link": "https://t.me/tech_updates"
+          // "target_link" is REQUIRED for raw mode to be useful; falls back to
+          // the item URL if omitted.
+          // "custom_prompt" is ignored in raw mode.
         },
         {
+          // ══ custom_llm: rewrite each item with this feed's prompt ─────────
           "url": "https://feeds.arstechnica.com/arstechnica/index",
-          "interval": 3600,
+          "interval": 3600,                // slow feed: every hour
           "mode": "custom_llm",
-          "custom_prompt": "Rewrite focusing on AI and developer-tooling angles. Write in {language}."
+          // If present, layered on top of channel_prompt + DEFAULT_PROMPT:
+          "custom_prompt": "For this feed, lead with the headline's impact and keep it under 1500 characters. Write in {language}.",
+          // "target_link" is ignored here — publisher appends the item source URL.
         },
         {
+          // ══ curate: accumulate + let the LLM pick the best ────────────────
           "url": "https://feeds.bbci.co.uk/news/technology/rss.xml",
-          "interval": 1800,
+          "interval": 1800,                // every 30 min
+          "mode": "curate",
+          // New items are stored; together with the OTHER curate feed below they
+          // form ONE pool for this channel. Each curate_interval_seconds the pool
+          // is claimed, the LLM picks curate_top_n winners, rewrites them with
+          // (channel_prompt + DEFAULT_PROMPT) and publishes.
+        },
+        {
+          // ══ another curate feed → same channel, SAME pool ────────────────
+          "url": "https://www.wired.com/feed/rss",
+          "interval": 3600,
           "mode": "curate"
         }
       ]
     },
+
     {
+      // ── Second channel: its own voice, no channel_prompt required ────────
       "name": "markets",
       "telegram_target": "@markets_public_channel",
       "feeds": [
@@ -39,7 +92,7 @@
           "url": "https://feeds.bbci.co.uk/news/business/rss.xml",
           "interval": 3600,
           "mode": "custom_llm",
-          "custom_prompt": "Short daily briefing tone. Two punchy paragraphs max. Write in {language}."
+          "custom_prompt": "Short daily-briefing tone. Two punchy paragraphs max, then 3 hashtags. Write in {language}."
         }
       ]
     }

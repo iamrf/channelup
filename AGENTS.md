@@ -37,12 +37,13 @@ Key invariants — do not break them:
   3× backoff on 429/5xx).
 - **raw never touches the LLM.** It copies the feed title/text and appends the
   feed's `target_link`.
-- **custom_llm uses the feed's `custom_prompt`** (`{language}` substituted) falling
-  back to the channel's layered default prompt (`config.feed_prompt`).
-- **curate accumulates then selects.** New items go to the `curate_items` table;
-  on schedule a batch is claimed, the LLM picks the top via `llm.select_top`
-  (falls back to first-N if its JSON can't be parsed back to candidate URLs), and the
-  winners are rewritten and published.
+- **Custom prompts are layered:** `feed.custom_prompt ⊃ channel.channel_prompt ⊃
+  DEFAULT_PROMPT` (empty layers skipped, `{language}` resolved; `config.feed_prompt`).
+- **curate pools per channel.** All `curate` feeds of one channel accumulate into a
+  single shared pool; each schedule tick claims `curate_batch_size` across all of
+  them, the LLM picks `curate_top_n` via `llm.select_top` (falls back to first-N if
+  its JSON can't be mapped back to candidate URLs), and the winners are rewritten
+  and published.
 - **All I/O is async** via aiohttp / asyncpg; feed parsing runs in a thread
   (`asyncio.to_thread`) because feedparser is synchronous.
 
@@ -79,6 +80,8 @@ Key invariants — do not break them:
   non-secret and committed (serverless CI runs against the checkout); the Ubuntu
   deploy `rsync`s it out so the server keeps its own copy. Feeds are per channel:
   `url`, `interval` (seconds), `mode`, optional `custom_prompt` / `target_link`.
+  The loader (`config.load_json`) is JSONC-tolerant: `//` and `/* */` comments and
+  trailing commas are allowed, so the `.example` file is fully commented.
 - **Adding a config field ⇒** update the matching dataclass(es), `from_dict`,
   `conftest.make_*` builders, and add a `test_config.py` case.
 - **Adding a store method ⇒** implement it in BOTH `PostgresStore` and `MemoryStore`

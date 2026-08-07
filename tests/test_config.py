@@ -4,7 +4,7 @@ import json
 import pytest
 
 from channelup.config import (Config, ChannelConfig, FeedConfig, build_system_prompt,
-                              feed_prompt, load_config)
+                              channel_prompt_text, feed_prompt, load_config)
 from channelup.prompts import DEFAULT_PROMPT
 
 
@@ -100,13 +100,15 @@ def make_channel_with_modes(modes, language="en"):
     )
 
 
-def test_feed_prompt_prefers_custom_prompt():
+def test_feed_prompt_layers_custom_over_channel_over_default():
     ch = ChannelConfig(name="c", telegram_target="@c",
                        feeds=(FeedConfig("u", 300, "custom_llm"),), language="en")
     feed = FeedConfig(url="u", interval=300, mode="custom_llm",
                       custom_prompt="Be brief in {language}.")
     p = feed_prompt(ch, feed)
-    assert p == "Be brief in en."
+    chan_prompt = channel_prompt_text(ch)
+    assert p.startswith("Be brief in en.\n\n")
+    assert chan_prompt in p
     assert "{language}" not in p
 
 
@@ -117,10 +119,45 @@ def test_feed_prompt_falls_back_to_channel_prompt():
     assert DEFAULT_PROMPT.format(language="en") in p
 
 
+def test_feed_prompt_three_layer_chain():
+    ch = ChannelConfig(name="c", telegram_target="@c",
+                       feeds=(FeedConfig("u", 300, "custom_llm"),),
+                       channel_prompt="Channel flavor.", language="en")
+    feed = FeedConfig(url="u", interval=300, mode="custom_llm", custom_prompt="Feed angle.")
+    p = feed_prompt(ch, feed)
+    # most-specific layer first, channel layer, then default
+    assert p.index("Feed angle.") < p.index("Channel flavor.") < p.index(DEFAULT_PROMPT[:20])
+
+
+def test_load_jsonc_with_comments_and_trailing_commas(tmp_path, env):
+    """load_config tolerates // comments (incl. inline after values) + trailing commas."""
+    path = tmp_path / "c.json"
+    path.write_text(
+        """
+        // channelup config
+        { "interval": 120,  // default fetch period
+          "channels": [
+            { "name": "a", "telegram_target": "@a",  // target
+              "feeds": [
+                { "url": "https://x/rss", "mode": "raw",
+                  "target_link": "https://t.me/a", },   // trailing comma ok
+                { "url": "https://y/rss", "mode": "curate", }
+              ],
+            },
+          ],
+        }
+        """
+    )
+    cfg = load_config(str(path), env)
+    assert cfg.channels[0].feeds[0].mode == "raw"
+    assert cfg.channels[0].feeds[0].interval == 120
+    assert len(cfg.channels[0].feeds) == 2
+
+
 def test_build_system_prompt_addon():
     ch = ChannelConfig(name="c", telegram_target="@c",
                        feeds=(FeedConfig("u", 300, "raw"),),
-                       prompt_addon="Add hashtags.", language="fa")
+                       channel_prompt="Add hashtags.", language="fa")
     p = build_system_prompt(ch)
     assert p.startswith("Add hashtags.\n\n")
     assert DEFAULT_PROMPT.format(language="fa") in p

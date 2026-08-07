@@ -101,7 +101,8 @@ def test_custom_prompt_used_for_item(monkeypatch):
         return "ok"
 
     _sweep(monkeypatch, cfg, fetch_items=_items(1), rewrite=rewrite)
-    assert seen == ["Do X in en."]
+    assert seen[0].startswith("Do X in en.\n\n")          # custom_prompt layered on default
+    assert "{language}" not in seen[0]
 
 
 def test_curate_accumulates_then_publishes_top(monkeypatch):
@@ -165,6 +166,55 @@ def test_channel_without_curate_skips_curate(monkeypatch):
 
     _sweep(monkeypatch, cfg, fetch_items=_items(1), rewrite=rewrite, select_top=select_top)
     assert hits == [], "select_top must not run for a channel without curate feeds"
+
+
+def test_all_curate_feeds_curate_together_as_one_pool(monkeypatch):
+    """Two curate feeds in a channel share a single selection pool (one claim)."""
+    channel = make_channel(feeds=(make_feed(url="https://cur-a/rss", mode="curate"),
+                                  make_feed(url="https://cur-b/rss", mode="curate")),
+                           curate_batch_size=10, curate_top_n=2)
+    cfg = make_config(channels=(channel,))
+
+    def fetch_a(feeds):
+        return _items(2, "https://a/")
+    def fetch_b(feeds):
+        return _items(3, "https://b/")
+
+    async def select_top(session, cands, cfg_, language, top_n):
+        seen_links.append([c["link"] for c in cands])
+        return cands[:top_n]
+
+    async def rewrite(session, item, cfg_, system):
+        return f"curated {item['link']}"
+
+    seen_links = []
+
+    async def scenario():
+        store = MemoryStore()
+        await store.init()
+        bot = FakeBot()
+        pipe = Pipeline(cfg, store, bot)
+        import channelup.pipeline as P
+        orig = (P.fetch_sources, P.rewrite, P.select_top)
+        def fetch(feeds):
+            return fetch_a(feeds) if feeds[0] == channel.feeds[0].url else fetch_b(feeds)
+        P.fetch_sources, P.rewrite, P.select_top = fetch, rewrite, select_top
+        try:
+            pipe.ensure_workers()
+            for feed in channel.feeds:
+                await pipe.fetch_feed_once(channel, feed)
+            await pipe.run_curate_once(channel)
+            await pipe.publish_queue.join()
+            return len(bot.messages)
+        finally:
+            P.fetch_sources, P.rewrite, P.select_top = orig
+            await pipe.stop()
+            await store.close()
+
+    published = run(scenario())
+    # Both curate feeds feed ONE pool (5 candidates), top 2 picked -> 2 published
+    assert seen_links[0] and len(seen_links[0]) == 5, "one claim sees ALL curate items"
+    assert published == 2
 
 
 def test_build_raw_text_uses_target_link():

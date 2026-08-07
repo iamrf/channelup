@@ -28,6 +28,87 @@ DEFAULT_CONFIG_FILE = "channels.json"
 FEED_MODES = ("raw", "custom_llm", "curate")
 
 
+def _strip_jsonc(text: str) -> str:
+    """Strip JSONC comments (``//`` and ``/* */``) outside of strings.
+
+    String-aware, so URLs inside quoted values (``https://``) are preserved.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    in_str = escape = False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _strip_trailing_commas(text: str) -> str:
+    """Remove single trailing commas before ``}`` / ``]`` (JSON5-style). String-aware."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    in_str = escape = False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+            continue
+        if c == ",":
+            j = i + 1
+            while j < n and text[j] in " \t\n\r":
+                j += 1
+            if j < n and text[j] in "}]":
+                i += 1  # drop the trailing comma
+                continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def load_json(path: str) -> Any:
+    """Load a JSON/JSONC file: comments + trailing commas allowed (JSON5-ish)."""
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    return json.loads(_strip_trailing_commas(_strip_jsonc(text)))
+
+
 @dataclass(frozen=True)
 class FeedConfig:
     """One RSS source with its own cadence, mode, and optional prompt/link."""
@@ -69,7 +150,7 @@ class ChannelConfig:
     telegram_target: str
     feeds: tuple[FeedConfig, ...]
     language: str = "fa"
-    prompt_addon: str = ""
+    channel_prompt: str = ""               # channel-level add-on over DEFAULT_PROMPT
     rate_per_minute: int = 19              # hard cap < Telegram's 20 msg/min
     curate_interval_seconds: int = 1800    # how often a curate batch runs
     curate_batch_size: int = 10            # items given to the LLM per batch
@@ -86,7 +167,8 @@ class ChannelConfig:
             telegram_target=str(raw["telegram_target"]),
             feeds=feeds,
             language=str(raw.get("language") or defaults["language"]),
-            prompt_addon=str(raw.get("prompt_addon") or ""),
+            channel_prompt=str(raw.get("channel_prompt")
+                               or raw.get("prompt_addon") or ""),   # prompt_addon = legacy alias
             rate_per_minute=int(raw.get("rate_per_minute") or defaults["rate_per_minute"]),
             curate_interval_seconds=int(raw.get("curate_interval_seconds")
                                         or defaults["curate_interval_seconds"]),
@@ -138,8 +220,7 @@ def load_config(path: str, env: Mapping[str, str] = None) -> Config:
     if env is None:
         env = os.environ
 
-    with open(path, encoding="utf-8") as fh:
-        data = json.load(fh)
+    data = load_json(path)
 
     missing = [k for k in ("TELEGRAM_BOT_TOKEN", "DATABASE_URL", "LLM_API_KEY") if not env.get(k)]
     if missing:
@@ -183,18 +264,34 @@ def load_config(path: str, env: Mapping[str, str] = None) -> Config:
     )
 
 
+def _fmt(text: str, language: str) -> str:
+    """Substitute ``{language}`` if present; leave empty text empty."""
+    return text.format(language=language) if text else ""
+
+
+def channel_prompt_text(channel: ChannelConfig, default: str = DEFAULT_PROMPT) -> str:
+    """The channel's own default prompt: ``channel_prompt`` layered over ``default``.
+
+    ``{language}`` is resolved in both layers.
+    """
+    base = _fmt(default, channel.language)
+    add = _fmt(channel.channel_prompt, channel.language)
+    return f"{add}\n\n{base}" if add else base
+
+
 def build_system_prompt(channel: ChannelConfig, default: str = DEFAULT_PROMPT) -> str:
-    """Channel prompt = ``prompt_addon`` prepended to the default, ``{language}`` resolved."""
-    base = default.format(language=channel.language)
-    return f"{channel.prompt_addon}\n\n{base}" if channel.prompt_addon else base
+    """Alias for ``channel_prompt_text`` — the channel-level layered prompt."""
+    return channel_prompt_text(channel, default)
 
 
 def feed_prompt(channel: ChannelConfig, feed: FeedConfig, default: str = DEFAULT_PROMPT) -> str:
-    """Resolve the prompt an item should be rewritten with.
+    """The full prompt an item is rewritten with, layered most-specific-first:
 
-    A feed's ``custom_prompt`` wins (``{language}`` substituted); otherwise fall
-    back to the channel's layered default prompt.
+        feed.custom_prompt ⊃ channel.channel_prompt ⊃ DEFAULT_PROMPT
+
+    Empty layers are skipped, so a feed with no ``custom_prompt`` just uses the
+    channel's layered default.
     """
-    if getattr(feed, "custom_prompt", ""):
-        return feed.custom_prompt.format(language=channel.language)
-    return build_system_prompt(channel, default)
+    chan = channel_prompt_text(channel, default)
+    cp = _fmt(feed.custom_prompt, channel.language)
+    return f"{cp}\n\n{chan}" if cp else chan

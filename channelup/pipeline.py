@@ -27,7 +27,7 @@ from typing import Optional
 import aiohttp
 from aiogram import Bot
 
-from .config import Config, ChannelConfig, FeedConfig, build_system_prompt
+from .config import (Config, ChannelConfig, FeedConfig, build_system_prompt, feed_prompt)
 from .db import Store
 from .fetcher import fetch_sources
 from .llm import rewrite, select_top
@@ -169,8 +169,7 @@ class Pipeline:
         while True:
             task: LLMTask = await self.llm_queue.get()
             try:
-                system = (task.feed.custom_prompt.format(language=task.channel.language)
-                          if task.feed.custom_prompt else build_system_prompt(task.channel))
+                system = feed_prompt(task.channel, task.feed)
                 async with self._llm_sem:
                     await self._llm_rl.acquire("llm")
                     text = await rewrite(self.http, task.item, self.cfg, system)
