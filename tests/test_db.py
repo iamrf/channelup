@@ -120,9 +120,11 @@ def test_postgres_store_init_migrates_existing_schema(monkeypatch):
         assert any(f"ALTER TABLE published ADD COLUMN IF NOT EXISTS {join}"
                    in s for s in executed), f"missing ALTER for {join}"
     assert any(s.startswith("CREATE TABLE IF NOT EXISTS curate_items") for s in executed)
-    # fresh curate table carries a unique(channel, link) so retried enqueues can't
-    # double-queue an item (prevents double-post).
-    assert any("UNIQUE (channel, link)" in s for s in executed)
+    # a pre-existing curate_items gets deduplicated, then the unique index that
+    # `ON CONFLICT (channel, link)` relies on is added idempotently.
+    assert any("DELETE FROM curate_items a USING curate_items b" in s for s in executed)
+    assert any("CREATE UNIQUE INDEX IF NOT EXISTS curate_items_channel_link_key" in s
+               for s in executed)
 
 
 def test_postgres_store_retries_transient_connection_errors():

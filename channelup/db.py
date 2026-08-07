@@ -163,6 +163,18 @@ class PostgresStore:
                         " created_ts BIGINT NOT NULL, processed_ts BIGINT,"
                         " UNIQUE (channel, link))"
                     )
+                    # Migrate a pre-existing curate_items (created before the
+                    # UNIQUE constraint existed): collapse any duplicate rows,
+                    # then add the unique index that `ON CONFLICT (channel, link)`
+                    # in enqueue_curate depends on.
+                    await conn.execute(
+                        "DELETE FROM curate_items a USING curate_items b "
+                        "WHERE a.id > b.id AND a.channel = b.channel AND a.link = b.link"
+                    )
+                    await conn.execute(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS curate_items_channel_link_key "
+                        "ON curate_items (channel, link)"
+                    )
                 return
             except _RETRYABLE as e:
                 last = e
