@@ -66,3 +66,57 @@ def test_postgres_store_requires_url():
 def test_postgres_store_exposes_asyncpg_pool_attribute():
     s = PostgresStore("postgresql://x")
     assert s.pool is None  # created on init against a live server only
+
+
+def test_postgres_store_init_migrates_existing_schema(monkeypatch):
+    """init() must add missing columns to a pre-existing `published` table."""
+    import asyncpg
+
+    executed = []
+
+    class FakeConn:
+        async def execute(self, sql, *args):
+            executed.append(sql.replace("\n", " ").strip())
+            return "CREATE TABLE"
+
+    class FakeClearAcquire:
+        def __init__(self, conn):
+            self.conn = conn
+
+        async def __aenter__(self):
+            return self.conn
+
+        async def __aexit__(self, *a):
+            return False
+
+    class FakePool:
+        def __init__(self):
+            self.closed = False
+            self.conn = FakeConn()
+
+        def acquire(self):
+            return FakeClearAcquire(self.conn)
+
+        async def close(self):
+            self.closed = True
+
+    pool = FakePool()
+
+    async def fake_create_pool(*a, **k):
+        return pool
+
+    monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
+
+    async def scenario():
+        s = PostgresStore("postgresql://x")
+        await s.init()
+        await s.close()
+        return s
+
+    run(scenario())
+    assert any(s.startswith("CREATE TABLE IF NOT EXISTS published") for s in executed)
+    for col in (("channel",), ("mode",), ("ts",)):
+        join = " ".join(col)
+        assert any(f"ALTER TABLE published ADD COLUMN IF NOT EXISTS {join}"
+                   in s for s in executed), f"missing ALTER for {join}"
+    assert any(s.startswith("CREATE TABLE IF NOT EXISTS curate_items") for s in executed)

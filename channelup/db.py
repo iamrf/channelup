@@ -123,6 +123,12 @@ class PostgresStore:
                 " hash TEXT PRIMARY KEY, channel TEXT NOT NULL, mode TEXT NOT NULL,"
                 " ts BIGINT NOT NULL)"
             )
+            # Idempotent migration: earlier ChannelUp versions created `published`
+            # without these columns; add anything missing so the new schema works
+            # on pre-existing Neon databases.
+            await conn.execute("ALTER TABLE published ADD COLUMN IF NOT EXISTS channel TEXT")
+            await conn.execute("ALTER TABLE published ADD COLUMN IF NOT EXISTS mode TEXT")
+            await conn.execute("ALTER TABLE published ADD COLUMN IF NOT EXISTS ts BIGINT")
             await conn.execute(
                 "CREATE TABLE IF NOT EXISTS curate_items ("
                 " id BIGSERIAL PRIMARY KEY, channel TEXT NOT NULL, feed_url TEXT NOT NULL,"
