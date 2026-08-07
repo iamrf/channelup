@@ -1,86 +1,68 @@
-"""Dedup store: in-memory store correctness and per-channel scoping."""
-from channelup.db import MemoryDedupStore, PostgresDedupStore, hash_key
+"""Dedup + curate queue: MemoryStore async surface, per-channel scoping, hashing."""
+import asyncio
+
+import pytest
+
+from channelup.db import MemoryStore, PostgresStore, hash_key
 
 
-def test_in_memory_store_roundtrip():
-    store = MemoryDedupStore()
-    store.init()
-    assert store.is_seen("news", "https://ex.com/a") is False
-    store.mark("news", "https://ex.com/a")
-    assert store.is_seen("news", "https://ex.com/a") is True
-    store.mark("news", "https://ex.com/a")  # idempotent
-    assert store.is_seen("news", "https://ex.com/a") is True
-    assert store.is_seen("news", "https://ex.com/b") is False
+def run(coro):
+    return asyncio.run(coro)
 
 
-def test_keys_are_scoped_per_channel():
-    store = MemoryDedupStore()
-    store.mark("news", "https://ex.com/a")
-    # Same link, different channel -> not seen
-    assert store.is_seen("sports", "https://ex.com/a") is False
+def test_memory_dedup_per_channel():
+    async def scenario():
+        s = MemoryStore()
+        await s.init()
+        assert await s.try_mark_seen("tech", "https://a/1", "raw") is True
+        assert await s.try_mark_seen("tech", "https://a/1", "raw") is False   # dup
+        assert await s.try_mark_seen("sports", "https://a/1", "raw") is True  # other channel
+        await s.close()
+    run(scenario())
 
 
 def test_hash_is_deterministic_and_channel_scoped():
-    assert hash_key("news", "https://ex.com/a") == hash_key("news", "https://ex.com/a")
-    assert hash_key("news", "https://ex.com/a") != hash_key("sports", "https://ex.com/a")
-    assert len(hash_key("news", "https://ex.com/a")) == 64  # hex sha256
+    assert hash_key("tech", "a") == hash_key("tech", "a")
+    assert hash_key("tech", "a") != hash_key("sports", "a")
+    assert len(hash_key("tech", "a")) == 64
+
+
+def test_curate_queue_claim_and_process():
+    async def scenario():
+        s = MemoryStore()
+        await s.init()
+        for i in range(4):
+            await s.enqueue_curate("tech", "https://feed", {
+                "link": f"https://a/{i}", "title": f"t{i}", "text": "body", "image": None,
+            })
+        batch = await s.claim_curate("tech", 3)
+        assert [b.link for b in batch] == ["https://a/0", "https://a/1", "https://a/2"]
+        assert all(b.image is None for b in batch)
+        # process the first batch
+        await s.mark_curate_processed([b.id for b in batch])
+        remaining = await s.claim_curate("tech", 10)
+        assert [b.link for b in remaining] == ["https://a/3"]
+        await s.close()
+    run(scenario())
+
+
+def test_curate_claim_respects_channel():
+    async def scenario():
+        s = MemoryStore()
+        await s.init()
+        await s.enqueue_curate("tech", "f", {"link": "a", "title": "t", "text": "b"})
+        await s.enqueue_curate("sports", "f", {"link": "b", "title": "t", "text": "b"})
+        assert len(await s.claim_curate("tech", 10)) == 1
+        assert len(await s.claim_curate("sports", 10)) == 1
+        await s.close()
+    run(scenario())
 
 
 def test_postgres_store_requires_url():
-    try:
-        PostgresDedupStore("")
-        assert False, "expected ValueError"
-    except ValueError:
-        pass
+    with pytest.raises(ValueError):
+        PostgresStore("")
 
 
-def test_postgres_store_mark_inserts_channel(monkeypatch):
-    """Verify the DDL/SQL issued by the Live store without a real database."""
-    store = PostgresDedupStore("postgresql://x")
-    captured = []
-
-    class FakeCursor:
-        def __init__(self, data=None):
-            self.data = data or []
-
-        def execute(self, sql, params=None):
-            captured.append((sql.replace("\n", " ").strip(), params))
-
-        def fetchone(self):
-            return self.data.pop() if self.data else None
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    class FakeConn:
-        def __init__(self, cursor=None):
-            self._cursor = cursor or FakeCursor()
-            self.closed = False
-            self.committed = 0
-
-        def cursor(self):
-            return self._cursor
-
-        def commit(self):
-            self.committed += 1
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            pass
-
-    monkeypatch.setattr(store, "_connect", lambda: FakeConn())
-    store.init()
-    store.mark("news", "https://ex.com/a")
-
-    sqls = [c[0] for c in captured]
-    assert any("CREATE TABLE IF NOT EXISTS published" in s for s in sqls)
-    assert any("ADD COLUMN IF NOT EXISTS channel" in s for s in sqls)
-    # the INSERT carries the hash + channel name
-    insert = [c for c in captured if c[0].startswith("INSERT")][0]
-    assert insert[1][1] == "news"
-    assert insert[1][0] == hash_key("news", "https://ex.com/a")
+def test_postgres_store_exposes_asyncpg_pool_attribute():
+    s = PostgresStore("postgresql://x")
+    assert s.pool is None  # created on init against a live server only

@@ -1,11 +1,8 @@
-"""One-shot cron runner: process every channel once and exit.
+"""One-shot cron runner: sweep every feed once, drain the queues, exit.
 
-Used (exactly one) by:
-- GitHub Actions scheduled workflow (serverless):  ``python run_cron.py``
-- Ubuntu self-host systemd timer / cron:           ``run_cron.py``
-
-It posts to Telegram directly, so the caller must provide the bot token, DB and
-LLM keys (via .env on the server, or repo secrets as env vars in CI).
+Used (exactly one) by the GitHub Actions scheduled workflow and the Ubuntu
+systemd timer. Runs the producer-consumer ``Pipeline.sweep``: fetch each feed
+once (+ run curate once), then wait for the LLM and publish queues to drain.
 """
 import asyncio
 import logging
@@ -14,8 +11,8 @@ from aiogram import Bot
 from dotenv import load_dotenv
 
 from channelup.config import get_config
-from channelup.db import PostgresDedupStore
-from channelup.runner import run_channels
+from channelup.db import PostgresStore
+from channelup.pipeline import Pipeline
 
 
 async def main() -> int:
@@ -24,17 +21,24 @@ async def main() -> int:
     load_dotenv()
 
     cfg = get_config()
-    store = PostgresDedupStore(cfg.database_url)
-    store.init()
+    store = PostgresStore(cfg.database_url)
+    await store.init()
 
     bot = Bot(cfg.bot_token)
+    pipeline: Pipeline | None = None
     try:
-        reports = await run_channels(cfg, store, bot)
-        for r in reports:
-            logging.info("[%s] fetched=%d published=%d errors=%d",
-                         r.channel, r.fetched, r.published, r.errors)
-        return sum(r.published for r in reports)
+        pipeline = Pipeline(cfg, store, bot)
+        published = await pipeline.sweep()
+        log = logging.getLogger("channelup.cron")
+        log.info("sweep done: fetched=%d rewritten=%d curated=%d published=%d errors=%d",
+                 pipeline.stats["fetched"], pipeline.stats["rewritten"],
+                 pipeline.stats["curated"], pipeline.stats["published"],
+                 pipeline.stats["errors"])
+        return published
     finally:
+        if pipeline is not None:
+            await pipeline.stop()
+        await store.close()
         await bot.session.close()
 
 

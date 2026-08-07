@@ -1,9 +1,10 @@
-"""Config parsing, per-channel resolution, and prompt building."""
+"""Config parsing: multi-mode fe ed schema, defaults, validation, prompt resolution."""
 import json
 
 import pytest
 
-from channelup.config import Config, ChannelConfig, build_system_prompt, load_config
+from channelup.config import (Config, ChannelConfig, FeedConfig, build_system_prompt,
+                              feed_prompt, load_config)
 from channelup.prompts import DEFAULT_PROMPT
 
 
@@ -13,85 +14,114 @@ def _write(tmp_path, data: dict):
     return str(p)
 
 
-def test_load_minimal_channel(tmp_path, env):
-    path = _write(tmp_path, {"channels": [{
-        "name": "news",
-        "telegram_target": "-1001",
-        "rss_sources": ["https://a.com/rss", "https://b.com/rss"],
-    }]})
-    cfg = load_config(path, env)
-
-    assert cfg.bot_token == "123:secret"
-    assert cfg.llm_provider == "openai"
-    assert cfg.llm_model == "gpt-4o-mini"
-    assert cfg.admin_user_ids == frozenset({1, 2, 3})
-
-    ch = cfg.channels[0]
-    assert ch.name == "news"
-    assert ch.telegram_target == "-1001"
-    assert ch.rss_sources == ("https://a.com/rss", "https://b.com/rss")
-    assert ch.prompt_addon == ""
-    assert ch.language == "fa"          # default from file fallback
-    assert ch.max_items_per_run == 5    # default
-    assert ch.post_delay_seconds == 5.0
-
-
-def test_load_file_defaults_and_per_channel_override(tmp_path, env):
-    path = _write(tmp_path, {
-        "language": "fa",
-        "max_items_per_run": 4,
-        "channels": [
-            {"name": "a", "telegram_target": "@a", "rss_sources": ["https://a/rss"],
-             "language": "en", "max_items_per_run": 9, "post_delay_seconds": 2},
-            {"name": "b", "telegram_target": "@b", "rss_sources": ["https://b/rss"]},
+def test_load_global_defaults_and_feed_modes(tmp_path, env):
+    path = _write(tmp_path, {"interval": 600, "channels": [{
+        "name": "tech", "telegram_target": "-1001",
+        "feeds": [
+            {"url": "https://raw/rss", "mode": "raw", "target_link": "https://t.me/x"},
+            {"url": "https://llm/rss", "mode": "custom_llm",
+             "custom_prompt": "Focus on X."},
+            {"url": "https://cur/rss", "mode": "curate"},
         ],
-    })
-    cfg = load_config(path, env)
-    a, b = cfg.channels
-    assert (a.language, a.max_items_per_run, a.post_delay_seconds) == ("en", 9, 2.0)
-    assert (b.language, b.max_items_per_run, b.post_delay_seconds) == ("fa", 4, 5.0)
-
-
-def test_missing_required_env_raises(tmp_path):
-    path = _write(tmp_path, {"channels": [{
-        "name": "a", "telegram_target": "@a", "rss_sources": ["https://a/rss"]
     }]})
-    with pytest.raises(RuntimeError, match="TELEGRAM_BOT_TOKEN"):
-        load_config(path, {})
+    cfg = load_config(path, env)
+    assert cfg.bot_token == "123:secret"
+    assert len(cfg.channels) == 1
+    feeds = cfg.channels[0].feeds
+    assert [f.mode for f in feeds] == ["raw", "custom_llm", "curate"]
+    assert feeds[0].target_link == "https://t.me/x"
+    # feed without explicit interval inherits the global default (600)
+    assert feeds[0].interval == 600
 
 
-def test_missing_channel_sources_raises(tmp_path, env):
-    path = _write(tmp_path, {"channels": [{"name": "a", "telegram_target": "@a"}]})
-    with pytest.raises(ValueError, match="rss_sources"):
+def test_raw_feed_empty_target_link_allowed(tmp_path, env):
+    path = _write(tmp_path, {"channels": [{
+        "name": "a", "telegram_target": "@a",
+        "feeds": [{"url": "https://raw/rss", "mode": "raw"}],
+    }]})
+    ch = load_config(path, env).channels[0]
+    assert ch.feeds[0].mode == "raw"
+    assert ch.feeds[0].target_link == ""
+
+
+def test_invalid_mode_rejected(tmp_path, env):
+    path = _write(tmp_path, {"channels": [{
+        "name": "a", "telegram_target": "@a",
+        "feeds": [{"url": "https://x/rss", "mode": "bogus"}],
+    }]})
+    with pytest.raises(ValueError, match="mode"):
         load_config(path, env)
 
 
-def test_duplicate_channel_names_raise(tmp_path, env):
+def test_zero_interval_rejected(tmp_path, env):
+    path = _write(tmp_path, {"channels": [{
+        "name": "a", "telegram_target": "@a",
+        "feeds": [{"url": "https://x/rss", "mode": "raw", "interval": 0}],
+    }]})
+    with pytest.raises(ValueError, match="interval"):
+        load_config(path, env)
+
+
+def test_channel_requires_feeds(tmp_path, env):
+    path = _write(tmp_path, {"channels": [{"name": "a", "telegram_target": "@a"}]})
+    with pytest.raises(ValueError, match="feeds"):
+        load_config(path, env)
+
+
+def test_duplicate_channel_names_rejected(tmp_path, env):
     path = _write(tmp_path, {"channels": [
-        {"name": "a", "telegram_target": "@a", "rss_sources": ["https://a/rss"]},
-        {"name": "a", "telegram_target": "@b", "rss_sources": ["https://b/rss"]},
+        {"name": "a", "telegram_target": "@a", "feeds": [{"url": "u", "mode": "raw"}]},
+        {"name": "a", "telegram_target": "@b", "feeds": [{"url": "v", "mode": "raw"}]},
     ]})
     with pytest.raises(ValueError, match="unique"):
         load_config(path, env)
 
 
-def test_no_channels_raises(tmp_path, env):
-    path = _write(tmp_path, {"channels": []})
-    with pytest.raises(ValueError, match="at least one"):
-        load_config(path, env)
+def test_missing_required_env_raises(tmp_path):
+    path = _write(tmp_path, {"channels": [{
+        "name": "a", "telegram_target": "@a",
+        "feeds": [{"url": "u", "mode": "raw"}],
+    }]})
+    with pytest.raises(RuntimeError, match="TELEGRAM_BOT_TOKEN"):
+        load_config(path, {})
 
 
-def test_build_system_prompt_no_addon():
-    ch = ChannelConfig(name="a", telegram_target="@a", rss_sources=("x",), language="en")
-    prompt = build_system_prompt(ch)
-    assert prompt == DEFAULT_PROMPT.format(language="en")
-    assert "{language}" not in prompt
+def test_has_curate_flag():
+    ch = make_channel_with_modes(["raw", "curate"])
+    assert ch.has_curate is True
+    ch2 = make_channel_with_modes(["raw", "custom_llm"])
+    assert ch2.has_curate is False
 
 
-def test_build_system_prompt_addon_is_prepended():
-    ch = ChannelConfig(name="a", telegram_target="@a", rss_sources=("x",),
-                       prompt_addon="Focus on AI.", language="fa")
-    prompt = build_system_prompt(ch)
-    assert prompt.startswith("Focus on AI.\n\n")
-    assert DEFAULT_PROMPT.format(language="fa") in prompt
-    assert prompt.count("Focus on AI.") == 1
+def make_channel_with_modes(modes, language="en"):
+    return ChannelConfig(
+        name="c", telegram_target="@c", language=language,
+        feeds=tuple(FeedConfig(url=f"https://{m}/rss", interval=300, mode=m) for m in modes),
+    )
+
+
+def test_feed_prompt_prefers_custom_prompt():
+    ch = ChannelConfig(name="c", telegram_target="@c",
+                       feeds=(FeedConfig("u", 300, "custom_llm"),), language="en")
+    feed = FeedConfig(url="u", interval=300, mode="custom_llm",
+                      custom_prompt="Be brief in {language}.")
+    p = feed_prompt(ch, feed)
+    assert p == "Be brief in en."
+    assert "{language}" not in p
+
+
+def test_feed_prompt_falls_back_to_channel_prompt():
+    ch = make_channel_with_modes(["raw"])
+    feed = FeedConfig(url="u", interval=300, mode="custom_llm")  # no custom_prompt
+    p = feed_prompt(ch, feed)
+    assert DEFAULT_PROMPT.format(language="en") in p
+
+
+def test_build_system_prompt_addon():
+    ch = ChannelConfig(name="c", telegram_target="@c",
+                       feeds=(FeedConfig("u", 300, "raw"),),
+                       prompt_addon="Add hashtags.", language="fa")
+    p = build_system_prompt(ch)
+    assert p.startswith("Add hashtags.\n\n")
+    assert DEFAULT_PROMPT.format(language="fa") in p
+    assert "{language}" not in p

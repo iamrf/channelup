@@ -1,7 +1,7 @@
-"""Polling bot: admin commands (/start, /publish_now, /status) + background loop.
+"""Polling bot: admin commands + start the producer-consumer pipeline.
 
-Entry point for the always-on mode: ``python -m channelup``. The one-shot cron mode
-is ``run_cron.py`` (see DEPLOY.md).
+Entry point for the always-on mode: ``python -m channelup``. The one-shot cron
+mode is ``run_cron.py`` (see DEPLOY.md).
 """
 from __future__ import annotations
 
@@ -16,68 +16,66 @@ from aiogram.types import Message
 from dotenv import load_dotenv
 
 from .config import Config, get_config
-from .db import DedupStore, PostgresDedupStore
-from .runner import stats, run_channels
+from .db import PostgresStore, Store
+from .pipeline import Pipeline
 
 log = logging.getLogger("channelup.bot")
 
 
-def loop(bot: Bot, cfg: Config, store: DedupStore) -> asyncio.Task:
-    async def _run():
-        while True:
-            try:
-                await run_channels(cfg, store, bot)
-            except Exception:
-                log.exception("Loop iteration crashed")
-            await asyncio.sleep(cfg.publish_interval_minutes * 60)
-
-    return asyncio.create_task(_run())
-
-
-def build_dispatcher(cfg: Config, store: DedupStore) -> Dispatcher:
+def build_dispatcher(cfg: Config, store: Store, pipeline: Pipeline) -> Dispatcher:
     dp = Dispatcher()
     dp["cfg"] = cfg
-    dp["store"] = store
+    dp["pipeline"] = pipeline
     admin = F.from_user.id.in_(cfg.admin_user_ids)
 
     @dp.message(Command("start"), admin)
     async def cmd_start(m: Message, cfg: Config):
+        n_feeds = sum(len(c.feeds) for c in cfg.channels)
         await m.answer(
             f"<b>ChannelUp Active</b>\n\n"
             f"<b>Channels:</b> {len(cfg.channels)}\n"
-            f"<b>Interval:</b> {cfg.publish_interval_minutes}m\n"
+            f"<b>Feeds:</b> {n_feeds}\n"
             f"<b>LLM:</b> {cfg.llm_provider}/{cfg.llm_model}\n"
-            f"<b>Sources:</b> {sum(len(c.rss_sources) for c in cfg.channels)}",
+            f"<b>Telegram cap:</b> {cfg.telegram_rate_per_minute}/min",
             parse_mode="HTML",
         )
 
     @dp.message(Command("publish_now"), admin)
-    async def cmd_now(m: Message, cfg: Config, store: DedupStore, bot: Bot):
+    async def cmd_now(m: Message, pipeline: Pipeline):
         await m.answer("Fetching & processing feeds…")
-        reports = await run_channels(cfg, store, bot)
-        total = sum(r.published for r in reports)
-        await m.answer(f"Successfully published <b>{total}</b> item(s).", parse_mode="HTML")
+        before = pipeline.stats["published"]
+        try:
+            await pipeline.sweep()
+            published = pipeline.stats["published"] - before
+            await m.answer(f"Published <b>{published}</b> new item(s).", parse_mode="HTML")
+        except Exception:
+            log.exception("publish_now failed")
+            await m.answer("Sweep failed — see logs.", parse_mode="HTML")
 
     @dp.message(Command("status"), admin)
-    async def cmd_status(m: Message):
+    async def cmd_status(m: Message, pipeline: Pipeline):
+        s = pipeline.stats
         await m.answer(
             f"<b>ChannelUp Status</b>\n\n"
-            f"<b>Last Run:</b> {stats['last_run'] or 'Never'}\n"
-            f"<b>Total Published:</b> {stats['published']}\n"
-            f"<b>Errors:</b> {stats['errors']}",
+            f"<b>Started:</b> {s['started_at'] or 'Never'}\n"
+            f"<b>Fetched:</b> {s['fetched']}\n"
+            f"<b>Rewritten:</b> {s['rewritten']}\n"
+            f"<b>Curated:</b> {s['curated']}\n"
+            f"<b>Published:</b> {s['published']}\n"
+            f"<b>Errors:</b> {s['errors']}",
             parse_mode="HTML",
         )
 
     return dp
 
 
-async def _async_main():
+async def _async_main() -> None:
     cfg = get_config()
-    store = PostgresDedupStore(cfg.database_url)
-    store.init()
+    store = PostgresStore(cfg.database_url)
+    await store.init()
     bot = Bot(cfg.bot_token)
+    pipeline: Pipeline | None = None
     try:
-        # verify channels reachable before starting
         me = await bot.get_me()
         for ch in cfg.channels:
             try:
@@ -90,9 +88,15 @@ async def _async_main():
                     f"  - Add @{me.username} to the channel as admin with 'Post Messages' rights\n"
                     f"  - Private channels have no @username; use the numeric ID"
                 )
-        loop(bot, cfg, store)
-        await build_dispatcher(cfg, store).start_polling(bot)
+
+        pipeline = Pipeline(cfg, store, bot)
+        pipeline.start()
+        dp = build_dispatcher(cfg, store, pipeline)
+        await dp.start_polling(bot)
     finally:
+        if pipeline is not None:
+            await pipeline.stop()
+        await store.close()
         await bot.session.close()
 
 

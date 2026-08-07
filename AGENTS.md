@@ -1,54 +1,66 @@
 # AGENTS.md
 
 Guidance for AI agents and humans working in this repo. Read this before changing
-code. `README.md` covers usage/config; `DEPLOY.md` covers CI/CD and deployment;
-this file covers structure, conventions, and gotchas for editors.
+code. `README.md` covers usage/config; `DEPLOY.md` covers CI/CD; this file covers
+structure, conventions, and gotchas.
 
 ## What this is
 
-**ChannelUp** — a Telegram autoposter: on a schedule (or `/publish_now`), fetch
-each configured channel's RSS sources, rewrite new items with an LLM, and post
-them. Each Telegram channel is independently configured with `rss_sources`,
-an optional `prompt_addon` (layered on the shared default prompt), and per-channel
-tuning. Dedup is per `(channel, link)` against Neon PostgreSQL.
+**ChannelUp** — a Telegram autoposter driven by an **async producer–consumer
+pipeline**. Each configured feed has a `mode` (`raw` / `custom_llm` / `curate`)
+and its own fetch `interval` (seconds). Items flow through `asyncio.Queue`s,
+rewritten by the LLM, and posted under a **strict per-channel token-bucket** that
+never exceeds Telegram's 20 msgs/min cap (default 19). Dedup + the `curate`
+accumulator live in Neon Postgres via asyncpg.
 
-## Architecture / data flow
+## Architecture
 
+```text
+per (channel, feed) producer task, every feed.interval
+   └─ fetch_sources ─▶ try_mark_seen (dedup, atomic) ─▶ route by mode:
+        raw        ────────────────────────────────▶ publish_queue
+        custom_llm ─▶ llm_queue ─▶ LLM worker ─────▶ publish_queue
+        curate     ─▶ store.enqueue_curate ─┐
+                                            ▼
+        curate job (every curate_interval): claim batch ─▶ LLM select_top ─▶ rewrite ─▶ publish_queue
+
+publish worker: acquire per-channel token bucket → publish (send_photo | send_message)
 ```
-each channel in channels.json
-  └─ fetch_sources(rss) ─▶ select_new(store) ─▶ rewrite(LLM, per-channel prompt) ─▶ publish ─▶ store.mark
-       (thread)               (dedup, capped)      (aiohttp, backoff)                (aiogram)   (only after success)
-```
 
-Key invariants, do not break them:
-- **Mark only after a successful post** — an item that fails is retried next run.
-- **Dedup key = `sha256(f"{channel}|{link}")`** — the same RSS link can reach
-  different channels independently.
-- **Blocking work runs in threads** — PostgreSQL (`store`) and feed parsing are
-  invoked via `asyncio.to_thread`; never hold the event loop with a DB call.
-- **Per-channel prompt = `prompt_addon` prepended to `DEFAULT_PROMPT`, `{language}`
-  substituted per channel** (see `config.build_system_prompt`).
-- **Telegram-HTML only.** The default prompt forbids block tags; `publisher` strips
-  them defensively. Keep prompt/HTML changes consistent with that.
-- **One channel crash never aborts the others** (`runner.run_channels`).
+Key invariants — do not break them:
+- **Rate limits are hard.** `ratelimit.TokenBucket` never sells a token it hasn't
+  refilled; `pipeline` acquires **per Telegram channel** and for the LLM provider
+  before every call. Default Telegram cap = `19/min` (safe under 20).
+- **Dedup happens at production** (`try_mark_seen`, atomic `INSERT … ON CONFLICT`).
+  An item is produced exactly once per channel; failures within the pipeline are
+  logged and counted, not retried (retry of transient LLM errors is inside `llm._chat`,
+  3× backoff on 429/5xx).
+- **raw never touches the LLM.** It copies the feed title/text and appends the
+  feed's `target_link`.
+- **custom_llm uses the feed's `custom_prompt`** (`{language}` substituted) falling
+  back to the channel's layered default prompt (`config.feed_prompt`).
+- **curate accumulates then selects.** New items go to the `curate_items` table;
+  on schedule a batch is claimed, the LLM picks the top via `llm.select_top`
+  (falls back to first-N if its JSON can't be parsed back to candidate URLs), and the
+  winners are rewritten and published.
+- **All I/O is async** via aiohttp / asyncpg; feed parsing runs in a thread
+  (`asyncio.to_thread`) because feedparser is synchronous.
 
 ## File layout
 
 | Path | Role |
 |---|---|
-| `channelup/__init__.py` | version |
-| `channelup/config.py` | `Config` / `ChannelConfig` from `channels.json` + env; `build_system_prompt` |
-| `channelup/prompts.py` | `DEFAULT_PROMPT` |
-| `channelup/db.py` | `DedupStore` protocol + `PostgresDedupStore` + `MemoryDedupStore` |
+| `channelup/config.py` | `Config` / `ChannelConfig` / `FeedConfig` (+`feed_prompt`) |
+| `channelup/pipeline.py` | `Pipeline`: queues, producers, LLM/publish workers, curate, `sweep` |
+| `channelup/db.py` | `Store` protocol + `PostgresStore` (asyncpg) + `MemoryStore` |
+| `channelup/ratelimit.py` | `TokenBucket` + `RateLimiter` (per-key buckets) |
 | `channelup/fetcher.py` | `clean`, `image_of`, `parse_source`, `fetch_sources` (pure) |
-| `channelup/llm.py` | `rewrite` provider call with 3× backoff |
-| `channelup/publisher.py` | `publish` to one `telegram_target` |
-| `channelup/runner.py` | `select_new`, `run_channel`, `run_channels`, `stats` |
-| `channelup/bot.py` | `/start` `/publish_now` `/status`, background loop, `main` |
-| `channelup/__main__.py` | `python -m channelup` → always-on polling |
-| `run_cron.py` | one-shot: process every channel, exit (GH cron + systemd timer) |
-| `channels.json.example` | template for `channels.json` (gitignored) |
-| `env.example` | secrets template (`.env` is gitignored) |
+| `channelup/llm.py` | `_chat`, `rewrite`, `select_top` |
+| `channelup/publisher.py` | `publish` to one target (`append_source` flag) |
+| `channelup/bot.py` | `/start` `/publish_now` `/status`, `main` |
+| `channelup/__main__.py` | `python -m channelup` → always-on pipeline |
+| `run_cron.py` | one-shot `Pipeline.sweep` (GH cron + systemd timer) |
+| `channels.json.example` / `env.example` | config templates |
 | `deploy/setup.sh`, `deploy/channelup.service` | Ubuntu provisioning |
 | `.github/workflows/{ci,deploy,cron}.yml` | tests, Ubuntu CD, serverless cron |
 | `tests/` | pytest suite |
@@ -56,37 +68,37 @@ Key invariants, do not break them:
 ## Commands
 
 ```bash
-.venv/bin/python -m pytest -q    # tests (no DB/network/Telegram needed)
-.venv/bin/python run_cron.py     # one-shot cron run (needs .env + channels.json)
-.venv/bin/python -m channelup    # always-on polling bot
+.venv/bin/python -m pytest -q    # tests (hermetic: no DB/network/Telegram)
+.venv/bin/python run_cron.py     # one-shot sweep (needs .env + channels.json)
+.venv/bin/python -m channelup    # always-on pipeline
 ```
 
 ## Conventions & gotchas
 
-- **Config = secrets (env) + channel defs (`channels.json`).** `channels.json` is
-  non-secret and **committed** (the serverless CI job runs against the checked-out
-  copy); the Ubuntu deploy `rsync`s it out so `setup.sh` keeps the server's own
-  local file. Global defaults (`language`, `max_items_per_run`, `post_delay_seconds`)
-  sit at the file top level; per-channel entries override them.
-- **Do not add schema-specific env vars** like `RSS_SOURCES`/`TARGET_CHANNEL_IDS`
-  /`SYSTEM_PROMPT` from the old single-channel design — those are gone.
-- **Add a `ChannelConfig` field ⇒** update `from_dict`, `build_system_prompt` (if
-  prompt-related), the `conftest.make_config` helper, and a `tests/test_config.py`
-  case. The `DedupStore` protocol takes `(channel, link)` — new lookup types go there.
-- **Tests are hermetic.** `MemoryDedupStore` replaces Postgres; the LLM/network and
-  Telegram layers are stubbed (see `tests/test_runner.py`'s `FakeBot` and
-  monkeypatched `channelup.runner.rewrite`). Postgres SQL is asserted without a live
-  DB in `tests/test_db.py` via a fake connection. Run `pytest` from the repo root.
-- **Anything new that talks to an external service** must stay behind the same seams
-  (an async function / a thread-bound sync call) so it can be stubbed in tests.
+- **Config = secrets (env) + feed defs (`channels.json`).** `channels.json` is
+  non-secret and committed (serverless CI runs against the checkout); the Ubuntu
+  deploy `rsync`s it out so the server keeps its own copy. Feeds are per channel:
+  `url`, `interval` (seconds), `mode`, optional `custom_prompt` / `target_link`.
+- **Adding a config field ⇒** update the matching dataclass(es), `from_dict`,
+  `conftest.make_*` builders, and add a `test_config.py` case.
+- **Adding a store method ⇒** implement it in BOTH `PostgresStore` and `MemoryStore`
+  and the `Store` protocol; add a `test_db.py` (Memory) case.
+- **Tests are hermetic.** `MemoryStore` replaces asyncpg; `FakeBot` + monkeypatched
+  `channelup.pipeline.fetch_sources` / `rewrite` / `select_top` replace the network
+  and LLM. `Pipeline` creates an aiohttp `ClientSession` in `__init__`, so build it
+  **inside** `asyncio.run`/a coroutine in tests (never at module import time).
+- **Use `asyncio.run` inside sync test functions** (no pytest-asyncio dependency).
+- **`RateLimiter` keys are Telegram channel ids** — a per-channel bucket is
+  created lazily with that channel's `rate_per_minute`.
+- Anything new that talks to an external service must stay behind a seam (an async
+  function / thread-`to_thread` boundary) so it can be stubbed.
 
 ## CI/CD
 
 - `ci.yml` — tests on push/PR.
-- `deploy.yml` — on `main`, run tests then `rsync` to the Ubuntu host + `setup.sh`
-  (systemd cron timer). Reads `DEPLOY_HOST` / `DEPLOY_USER` / `DEPLOY_SSH_KEY` secrets.
-- `cron.yml` — serverless one-shot, runs on `*/30 * * * *` and manual dispatch
-  (disable it if you add the Ubuntu timer to avoid double-posting).
+- `deploy.yml` — on `main`, tests → `rsync` to Ubuntu + `setup.sh` (systemd cron
+  timer). Secrets: `DEPLOY_HOST` / `DEPLOY_USER` / `DEPLOY_SSH_KEY`.
+- `cron.yml` — serverless one-shot `run_cron.py` on `*/30 * * * *` + manual dispatch.
 
-> **Only one scheduler may be active.** The Ubuntu timer (from `setup.sh`) and the
-> `cron.yml` serverless job must not both run, or every item posts twice.
+> **Only one scheduler may be active.** The Ubuntu timer and `cron.yml` must not
+> both run, or every item posts twice.

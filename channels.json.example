@@ -1,28 +1,47 @@
 {
   "language": "fa",
-  "max_items_per_run": 5,
-  "post_delay_seconds": 5,
+  "interval": 300,
+  "telegram_rate_per_minute": 19,
+  "curate_interval_seconds": 1800,
+  "curate_batch_size": 10,
+  "curate_top_n": 5,
   "channels": [
     {
       "name": "tech",
       "telegram_target": "-1001234567890",
-      "rss_sources": [
-        "https://www.theverge.com/rss/index.xml",
-        "https://feeds.arstechnica.com/arstechnica/index"
-      ],
-      "prompt_addon": "Coverage should emphasize AI and developer tooling angles.",
       "language": "en",
-      "max_items_per_run": 3,
-      "post_delay_seconds": 7
+      "rate_per_minute": 15,
+      "feeds": [
+        {
+          "url": "https://www.theverge.com/rss/index.xml",
+          "interval": 60,
+          "mode": "raw",
+          "target_link": "https://t.me/tech_updates"
+        },
+        {
+          "url": "https://feeds.arstechnica.com/arstechnica/index",
+          "interval": 3600,
+          "mode": "custom_llm",
+          "custom_prompt": "Rewrite focusing on AI and developer-tooling angles. Write in {language}."
+        },
+        {
+          "url": "https://feeds.bbci.co.uk/news/technology/rss.xml",
+          "interval": 1800,
+          "mode": "curate"
+        }
+      ]
     },
     {
       "name": "markets",
       "telegram_target": "@markets_public_channel",
-      "rss_sources": [
-        "https://feeds.bbci.co.uk/news/business/rss.xml"
-      ],
-      "prompt_addon": "Short daily briefing tone. Two punchy paragraphs max.",
-      "language": "en"
+      "feeds": [
+        {
+          "url": "https://feeds.bbci.co.uk/news/business/rss.xml",
+          "interval": 3600,
+          "mode": "custom_llm",
+          "custom_prompt": "Short daily briefing tone. Two punchy paragraphs max. Write in {language}."
+        }
+      ]
     }
   ]
 }

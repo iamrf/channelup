@@ -22,16 +22,17 @@ GitHub Actions. This document covers both supported runtime targets.
 
 ```
 channelup/
-  __init__.py    __main__.py      # python -m channelup  (always-on polling)
-  config.py      # Config + ChannelConfig from channels.json + env
+  __init__.py    __main__.py      # python -m channelup  (always-on pipeline)
+  config.py      # Config + ChannelConfig + FeedConfig from channels.json + env
   prompts.py     # DEFAULT_PROMPT
-  db.py          # dedup store (Postgres/Neon) — per-channel keys
+  db.py          # Store (asyncpg/Neon): dedup + curate queue (+ MemoryStore for tests)
+  ratelimit.py   # TokenBucket / RateLimiter (Telegram + LLM caps)
   fetcher.py     # RSS parse / clean / image
-  llm.py         # provider rewrite with backoff
+  llm.py         # _chat / rewrite / select_top (curate)
   publisher.py   # post to one Telegram channel
-  runner.py      # run_channel / run_channels + stats
-  bot.py         # /start /publish_now /status + background loop
-run_cron.py      # one-shot: process every channel once, exit
+  pipeline.py    # Producer-Consumer: queues, workers, curate, sweep
+  bot.py         # /start /publish_now /status + pipeline start
+run_cron.py      # one-shot: Pipeline.sweep over every feed once, exit
 channels.json.example
 deploy/
   setup.sh                # server bootstrap (venv + systemd timer)
@@ -44,14 +45,14 @@ deploy/
 
 ## Configuration
 
-- **`channels.json`** — non-secret, one entry per Telegram channel: `rss_sources`
-  (a list), `prompt_addon` (layered on top of the default prompt), plus optional
-  per-channel `language` / `max_items_per_run` / `post_delay_seconds`. Copy from
-  `channels.json.example`. Global defaults (`language`, `max_items_per_run`,
-  `post_delay_seconds`) can sit at the top level of the file.
-- **`.env`** (Ubuntu) or **GitHub Secrets** (serverless) — secrets: `TELEGRAM_BOT_TOKEN`,
-  `DATABASE_URL`, `LLM_API_KEY` (+ `LLM_PROVIDER` / `LLM_MODEL` / `LLM_API_BASE_URL`).
-  See `env.example`.
+- **`channels.json`** — non-secret, one entry per Telegram channel, each with a
+  list of `feeds`: `url`, `interval` (seconds), `mode` (`raw` | `custom_llm` |
+  `curate`), optional `custom_prompt` / `target_link`. Global defaults
+  (`interval`, `language`, `telegram_rate_per_minute`, `curate_*`) can sit at the
+  top of the file. Copy from `channels.json.example`.
+- **`.env`** (Ubuntu) or **GitHub Secrets** (serverless) — secrets:
+  `TELEGRAM_BOT_TOKEN`, `DATABASE_URL`, `LLM_API_KEY` (+ `LLM_PROVIDER` /
+  `LLM_MODEL` / optional tuning vars). See `env.example`.
 
 ---
 

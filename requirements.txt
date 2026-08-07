@@ -1,6 +1,6 @@
 aiogram>=3.13
 feedparser>=6.0
 python-dotenv>=1.0
-psycopg2-binary
 aiohttp
+asyncpg>=0.29
 pytest>=8.0

@@ -37,10 +37,17 @@ def _clean_html(text: str) -> str:
 
 
 async def publish(
-    bot: Bot, session: aiohttp.ClientSession, item: dict, text: str, telegram_target: str
+    bot: Bot, session: aiohttp.ClientSession, item: dict, text: str, telegram_target: str,
+    append_source: bool = True,
 ) -> None:
-    """Post one rewritten item to ``telegram_target`` (photo + caption when available)."""
-    body = _clean_html(text).strip() + _SOURCE_LINK.format(link=item["link"])
+    """Post one item to ``telegram_target`` (photo + caption when available).
+
+    ``append_source`` controls whether the source link is appended. ``raw``-mode
+    posts already carry their own ``target_link`` and pass ``False``.
+    """
+    clean_text = _clean_html(text).strip()
+    clean_text += _SOURCE_LINK.format(link=item["link"]) if append_source else ""
+    body = clean_text
 
     sent_with_photo = False
     if item.get("image"):

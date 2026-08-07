@@ -1,3 +1,3 @@
-"""ChannelUp: RSS -> LLM rewrite -> Telegram channel autoposter (multi-channel)."""
+"""ChannelUp: RSS -> LLM rewrite -> Telegram channel autoposter (multi-mode, queue-based)."""
 
-__version__ = "2.0.0"
+__version__ = "3.0.0"
