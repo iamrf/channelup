@@ -42,11 +42,47 @@
         }
       ]
     },
-
+    {
+      "name": "Narenj",                      
+      "telegram_target": "@narenj_web", 
+      "channel_prompt": "Coverage should emphasize Website, wordpress, onlineshop, webdesign News. Always end with 5 hashtags. all readers have a website or a business needs onlineshop or website",
+      "rate_per_minute": 15,               
+      "feeds": [
+        {
+          "url": "https://feeds.feedburner.com/designshard",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://weworkremotely.com/remote-jobs.rss",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "http://rss.marketingprofs.com/marketingprofs/daily",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://blog.hubspot.com/marketing/rss.xml?tabid=6307&moduleid=8441&maxcount=25",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://www.thisux.com/feed",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://medium.com/feed/tag/ui",
+          "interval": 1800,
+          "mode": "curate"
+        }
+      ]
+    },
     {
       "name": "GigUp",
       "telegram_target": "@gigup_net",
-      "language": "English",                       
       "feeds": [
         {
           "url": "https://feeds.bbci.co.uk/news/business/rss.xml",
