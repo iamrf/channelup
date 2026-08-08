@@ -16,12 +16,6 @@
       "rate_per_minute": 15,               
       "feeds": [
         {
-          "url": "https://feeds.bbci.co.uk/news/world/middle_east/rss.xml?edition=int",
-          "interval": 60,                  
-          "mode": "raw",
-          "target_link": "https://t.me/channelupx"
-        },
-        {
           "url": "https://rss.nytimes.com/services/xml/rss/nyt/MiddleEast.xml",
           "interval": 1800,
           "mode": "curate"
