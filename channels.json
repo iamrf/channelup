@@ -12,29 +12,38 @@
     {
       "name": "ChannelUp",                      
       "telegram_target": "@channelupx", 
-      "channel_prompt": "Coverage should emphasize AI and developer-tooling angles. Always end with 5 hashtags.",
+      "channel_prompt": "Coverage should emphasize Middle-East and Iran News. Always end with 5 hashtags. all readers are iranian people",
       "rate_per_minute": 15,               
       "feeds": [
         {
-          "url": "https://feeds.bbci.co.uk/news/technology/rss.xml",
+          "url": "https://feeds.bbci.co.uk/news/world/middle_east/rss.xml?edition=int",
           "interval": 60,                  
           "mode": "raw",
           "target_link": "https://t.me/channelupx"
         },
         {
-          "url": "https://feeds.arstechnica.com/arstechnica/index",
-          "interval": 3600,                
-          "mode": "custom_llm",
-          "custom_prompt": "For this feed, lead with the headline's impact and keep it under 1500 characters. Write in {language}."
-        },
-        {
-          "url": "https://www.theverge.com/rss/full.xml",
+          "url": "https://rss.nytimes.com/services/xml/rss/nyt/MiddleEast.xml",
           "interval": 1800,
           "mode": "curate"
         },
         {
-          "url": "https://www.wired.com/feed/rss",
-          "interval": 3600,
+          "url": "https://feeds.washingtonpost.com/rss/world/middle-east",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://feeds.bbci.co.uk/news/world/middle_east/rss.xml?edition=int",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://www.telegraph.co.uk/news/rss.xml",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://news.google.com/rss/search?hl=en-US&gl=US&q=middle+east&um=1&ie=UTF-8&ceid=US:en",
+          "interval": 1800,
           "mode": "curate"
         }
       ]
