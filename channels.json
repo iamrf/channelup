@@ -1,1 +1,93 @@
- 
+{
+  "language": "Persian فارسی",                       
+  "interval": 300,                        
+  "telegram_rate_per_minute": 19,         
+  "curate_interval_seconds": 1800,        
+  "curate_batch_size": 10,                
+  "curate_top_n": 5,                      
+  "llm_queue_size": 256,                  
+  "publish_queue_size": 256,              
+
+  "channels": [
+    {
+      "name": "Narenj",                      
+      "telegram_target": "@narenj_web", 
+      "channel_prompt": "Coverage should emphasize Website, wordpress, onlineshop, webdesign News. Always end with 5 hashtags. all readers have a website or a business needs onlineshop or website",
+      "rate_per_minute": 15,               
+      "feeds": [
+        {
+          "url": "https://feeds.feedburner.com/designshard",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://weworkremotely.com/remote-jobs.rss",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "http://rss.marketingprofs.com/marketingprofs/daily",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://blog.hubspot.com/marketing/rss.xml?tabid=6307&moduleid=8441&maxcount=25",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://www.thisux.com/feed",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://medium.com/feed/tag/ui",
+          "interval": 1800,
+          "mode": "curate"
+        }
+      ]
+    },
+    {
+      "name": "SUR VPN",
+      "telegram_target": "@survpn",
+      "feeds": [
+        {
+          "url": "https://www.wired.com/feed/rss",
+          "interval": 3600,
+          "mode": "custom_llm",
+          "custom_prompt": "our clients are VPN users. Short daily-briefing tone. Two punchy paragraphs max, then 3 hashtags."
+        },
+        {
+          "url": "https://www.bleepingcomputer.com/feed/",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://therecord.media/feed",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://www.nytimes.com/svc/collections/v1/publish/https://www.nytimes.com/spotlight/cybersecurity/rss.xml",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://feeds.feedburner.com/TheHackersNews?format=xml",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://openai.com/news/rss.xml",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://feeds.feedburner.com/DataProtectionReport",
+          "interval": 1800,
+          "mode": "curate"
+        }
+      ]
+    }
+  ]
+}
