@@ -12,7 +12,7 @@
     {
       "name": "Narenj",                      
       "telegram_target": "@narenj_web", 
-      "channel_prompt": "Coverage should emphasize Website, wordpress, onlineshop, webdesign News. Always end with 5 hashtags. all readers have a website or a business needs onlineshop or website",
+      "channel_prompt": "Coverage should emphasize Website, onlineshop, webdesign News. Always end with 5 hashtags. all readers have a website or a business needs onlineshop or website",
       "rate_per_minute": 15,               
       "feeds": [
         {
@@ -50,13 +50,13 @@
     {
       "name": "SUR VPN",
       "telegram_target": "@survpn",
+      "channel_prompt": "its a VPN seller's channel. most of users are in Iran/China/Russia/Ukraine. Coverage should emphasize VPN and censorship angles and new tools. Always end with 5 hashtags.",
       "language": "en",                       
       "feeds": [
         {
           "url": "https://www.wired.com/feed/rss",
           "interval": 3600,
-          "mode": "custom_llm",
-          "custom_prompt": "our clients are VPN users. Short daily-briefing tone. Two punchy paragraphs max, then 3 hashtags."
+          "mode": "curate"
         },
         {
           "url": "https://www.bleepingcomputer.com/feed/",
