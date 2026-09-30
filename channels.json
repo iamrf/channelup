@@ -10,6 +10,38 @@
 
   "channels": [
     {
+      "name": "Fandoq",
+      "telegram_target": "@fandoq_net",
+      "channel_prompt": "its a Digital goods and accounts seller's channel. Coverage should emphasize AI and Digital Premium subscriptions and payments angles. Always end with 5 hashtags.",
+      "feeds": [
+        {
+          "url": "https://openai.com/news/rss.xml",
+          "interval": 3600,
+          "mode": "curate"
+        },
+        {
+          "url": "https://blockchain.news/rss",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://venturebeat.com/category/ai/feed",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://cointelegraph.com/rss",
+          "interval": 1800,
+          "mode": "curate"
+        },
+        {
+          "url": "https://bair.berkeley.edu/blog/feed.xml",
+          "interval": 1800,
+          "mode": "curate"
+        }
+      ]
+    },
+    {
       "name": "Narenj",                      
       "telegram_target": "@narenj_web", 
       "channel_prompt": "Coverage should emphasize Website, onlineshop, webdesign News. Always end with 5 hashtags. all readers have a website or a business needs onlineshop or website",
