@@ -50,6 +50,7 @@
     {
       "name": "SUR VPN",
       "telegram_target": "@survpn",
+      "language": "en",                       
       "feeds": [
         {
           "url": "https://www.wired.com/feed/rss",
