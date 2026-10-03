@@ -33,10 +33,10 @@ def build_dispatcher(cfg: Config, store: Store, pipeline: Pipeline) -> Dispatche
         n_feeds = sum(len(c.feeds) for c in cfg.channels)
         await m.answer(
             f"<b>ChannelUp Active</b>\n\n"
-            f"<b>Channels:</b> {len(cfg.channels)}\n"
+            f"<b>Targets:</b> {len(cfg.channels)} channel(s)/group(s)\n"
             f"<b>Feeds:</b> {n_feeds}\n"
             f"<b>LLM:</b> {cfg.llm_provider}/{cfg.llm_model}\n"
-            f"<b>Telegram cap:</b> {cfg.telegram_rate_per_minute}/min",
+            f"<b>Telegram cap:</b> {cfg.telegram_rate_per_minute}/min per target",
             parse_mode="HTML",
         )
 
@@ -80,13 +80,19 @@ async def _async_main() -> None:
         for ch in cfg.channels:
             try:
                 info = await bot.get_chat(ch.telegram_target)
-                log.info("Channel verified: %s (%s)", info.title or ch.telegram_target, ch.name)
+                kind = getattr(info, "type", None) or "chat"
+                log.info(
+                    "Target verified (%s): %s (%s)",
+                    kind, info.title or ch.telegram_target, ch.name,
+                )
             except TelegramAPIError as e:
                 sys.exit(
-                    f"Cannot reach channel {ch.telegram_target!r}: {e.message}\n"
+                    f"Cannot reach telegram_target {ch.telegram_target!r}: {e.message}\n"
                     f"  - Numeric IDs must look like -1001234567890 (not 1234567890)\n"
-                    f"  - Add @{me.username} to the channel as admin with 'Post Messages' rights\n"
-                    f"  - Private channels have no @username; use the numeric ID"
+                    f"  - Channels: add @{me.username} as admin with 'Post Messages'\n"
+                    f"  - Groups/supergroups: add @{me.username} as a member "
+                    f"(admin if the group restricts who can post)\n"
+                    f"  - Private chats have no @username; use the numeric ID"
                 )
 
         pipeline = Pipeline(cfg, store, bot)

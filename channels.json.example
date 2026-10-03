@@ -27,9 +27,10 @@
 
   "channels": [
     {
-      // ── Channel identity ─────────────────────────────────────────────────
+      // ── Target identity (Telegram channel OR group/supergroup) ───────────
       "name": "tech",                      // unique ID used in logs + dedup keys
-      "telegram_target": "-1001234567890", // numeric -100… id or @public_name
+      // @public_name or numeric -100… id (private channels/groups need the id)
+      "telegram_target": "-1001234567890",
       "language": "en",                    // overrides the global default
 
       // Channel's OWN default prompt: an add-on layered on top of
@@ -37,7 +38,7 @@
       // is rewritten with this (plus any per-feed custom_prompt).
       "channel_prompt": "Coverage should emphasize AI and developer-tooling angles. Always end with 5 hashtags.",
 
-      "rate_per_minute": 15,               // optional per-channel Telegram cap (< 20)
+      "rate_per_minute": 15,               // optional per-target Telegram cap (< 20)
       // "curate_interval_seconds": 1800,  // optional per-channel curate tuning
       // "curate_batch_size": 10,
       // "curate_top_n": 5,

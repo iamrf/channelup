@@ -1,9 +1,9 @@
 """Strict rate limiting via token buckets.
 
-Telegram enforces **20 messages/minute per target channel**; we stay safely under
-it (default 19). The same token-bucket is reused to keep the LLM provider (e.g.
-Gemini 2.5 Flash-Lite) within its own per-minute budget. A bucket never sells a
-token it does not have — the consumer always waits for refill.
+Telegram enforces **20 messages/minute per chat** (channel or group); we stay
+safely under it (default 19). The same token-bucket is reused to keep the LLM
+provider (e.g. Gemini 2.5 Flash-Lite) within its own per-minute budget. A bucket
+never sells a token it does not have — the consumer always waits for refill.
 """
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ class TokenBucket:
 
 
 class RateLimiter:
-    """A registry of token buckets keyed by name (e.g. a Telegram channel id)."""
+    """A registry of token buckets keyed by name (e.g. a Telegram chat id)."""
 
     def __init__(self, default_capacity: float = 19.0, period_seconds: float = 60.0) -> None:
         self.default_capacity = float(default_capacity)

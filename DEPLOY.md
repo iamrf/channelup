@@ -19,10 +19,10 @@ manually once.
 
 ## Config (shared by all options)
 
-- **`channels.json`** — non-secret; one entry per Telegram channel with a `feeds`
-  list (`url`, `interval`, `mode` = `raw` | `custom_llm` | `curate`, optional
-  `target_link` / `custom_prompt`). JSONC comments/trailing commas allowed. It is
-  committed, so every deploy uses the same copy.
+- **`channels.json`** — non-secret; one entry per Telegram **channel or group**
+  with a `feeds` list (`url`, `interval`, `mode` = `raw` | `custom_llm` |
+  `curate`, optional `target_link` / `custom_prompt`). JSONC comments/trailing
+  commas allowed. It is committed, so every deploy uses the same copy.
 - **`.env` / secrets** — `TELEGRAM_BOT_TOKEN`, `DATABASE_URL` (Neon), `LLM_API_KEY`
   (+ `LLM_PROVIDER`, `LLM_MODEL`, optional tuning). See `env.example`.
 
@@ -188,8 +188,9 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 ## Troubleshooting
 
-- **Nothing posts** → `.env`/secrets present? `channels.json` exists? Bot is admin
-  on every `telegram_target` with *Post Messages*? `-100…` IDs need the `-100`.
+- **Nothing posts** → `.env`/secrets present? `channels.json` exists? For
+  **channels**, bot is admin with *Post Messages*; for **groups**, bot is a
+  member (admin if posting is restricted)? `-100…` IDs need the `-100`.
 - **`column "mode" does not exist`** → the Neon DB predates the new schema; the app
   now auto-migrates on boot (`ALTER TABLE … ADD COLUMN IF NOT EXISTS`). Restart once.
 - **`connection was closed in the middle of operation`** → Neon serverless dropped

@@ -31,7 +31,7 @@ from .config import (Config, ChannelConfig, FeedConfig, build_system_prompt, fee
 from .db import Store
 from .fetcher import fetch_sources
 from .llm import rewrite, select_top
-from .publisher import publish
+from .publisher import message_slots, publish
 from .ratelimit import RateLimiter
 
 log = logging.getLogger("channelup.pipeline")
@@ -185,10 +185,17 @@ class Pipeline:
         while True:
             task: PublishTask = await self.publish_queue.get()
             try:
-                await self._publisher_rl.acquire(task.channel.telegram_target,
-                                                 task.channel.rate_per_minute)
-                await publish(self.bot, self.http, task.item, task.text,
-                              task.channel.telegram_target, append_source=task.append_source)
+                # Long captions become photo + follow-up message (2 API calls).
+                # Acquire one token per message so we never exceed the Telegram cap.
+                slots = message_slots(task.item, task.text, task.append_source)
+                for _ in range(slots):
+                    await self._publisher_rl.acquire(
+                        task.channel.telegram_target, task.channel.rate_per_minute
+                    )
+                await publish(
+                    self.bot, self.http, task.item, task.text,
+                    task.channel.telegram_target, append_source=task.append_source,
+                )
                 self.stats["published"] += 1
             except Exception:
                 self.stats["errors"] += 1

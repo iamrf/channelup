@@ -3,8 +3,9 @@
 RSS → LLM → Telegram **autoposter** built on an async producer–consumer pipeline.
 Every feed runs on its own schedule with one of three modes — `raw` (no LLM),
 `custom_llm` (per-feed prompt), or `curate` (accumulate, let the LLM pick, rewrite).
-Publishing is throttled per channel to stay strictly under Telegram's 20 msgs/min
-cap, and dedup + the curate accumulator live in Neon Postgres (asyncpg).
+Publishing is throttled **per Telegram target** (channel or group) to stay strictly
+under Telegram's 20 msgs/min cap, and dedup + the curate accumulator live in Neon
+Postgres (asyncpg).
 
 ## Install
 
@@ -12,7 +13,7 @@ cap, and dedup + the curate accumulator live in Neon Postgres (asyncpg).
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp env.example .env               # secrets: bot token, LLM key, Neon URL
-cp channels.json.example channels.json   # your channels + feeds (modes, intervals)
+cp channels.json.example channels.json   # your channels/groups + feeds
 python run_cron.py                # one-shot sweep of every feed
 ```
 
@@ -25,7 +26,8 @@ python -m channelup
 ## Configure
 
 - **`.env`** — secrets + pipeline tuning (see `env.example`).
-- **`channels.json`** — one entry per Telegram channel, each with a list of **feeds**.
+- **`channels.json`** — one entry per Telegram **channel or group**, each with a
+  list of **feeds**.
 
 ```json
 {
@@ -53,6 +55,21 @@ python -m channelup
   ]
 }
 ```
+
+### Telegram targets (channels & groups)
+
+`telegram_target` accepts a public `@username` or a numeric chat id
+(`-100…`). The same field works for channels, groups, and supergroups.
+
+| Target | Bot setup |
+|---|---|
+| **Channel** | Add the bot as admin with **Post Messages**. |
+| **Group / supergroup** | Add the bot as a member; make it admin if the group restricts who can post. |
+| **Private** (no `@username`) | Use the numeric `-100…` id. |
+
+Startup (`python -m channelup`) calls `get_chat` on every target and exits with
+setup hints if any are unreachable. Rate limits are keyed by `telegram_target`,
+so two config entries pointing at the same chat share one bucket.
 
 ### Feed modes
 
@@ -88,7 +105,7 @@ supports JSONC: `//` comments and trailing commas are allowed.
 | `DATABASE_URL` | Neon PostgreSQL connection string (dedup + curate queue) |
 | `LLM_CONCURRENCY` | Parallel LLM calls (default `4`) |
 | `LLM_RATE_PER_MINUTE` | LLM token-bucket refill (default `60`) |
-| `TELEGRAM_RATE_PER_MINUTE` | Global Telegram cap (default `19`, < 20) |
+| `TELEGRAM_RATE_PER_MINUTE` | Global Telegram cap per target (default `19`, < 20) |
 | `CONFIG_FILE` | Optional path override for `channels.json` |
 
 ## Commands (always-on mode, admins only)
@@ -106,7 +123,11 @@ supports JSONC: `//` comments and trailing commas are allowed.
    `curate` → `curate_items` table.
 4. **Workers** — LLM workers rewrite (concurrency-capped + rate-limited), publish
    workers post. All rate limits are strict token buckets.
-5. **Publishing** — `send_photo` when a lead image is available, else `send_message`.
+5. **Publishing** — downloads a lead image when available and re-uploads it via
+   `send_photo` (caption when short enough; otherwise photo then a follow-up
+   `send_message`). Falls back to text on download/photo errors. HTML is sanitized
+   to Telegram's allowlist; bad entities retry as plain text. Non-`raw` posts get a
+   **Source** link appended. Long photo+text posts reserve **two** rate-limit tokens.
 6. A crashed feed/channel never aborts the others.
 
 ## Deploy & CI/CD
@@ -135,5 +156,6 @@ python -m pytest -q
   curate queue makes it easy to shard later if needed.
 - **DB pruning** — hashes are ~70 bytes; add a `DELETE WHERE ts < …` cron past a
   few million rows.
-- **Media re-upload** — Telegram fetches image URLs directly; falls back to text.
-- **Per-feed rate overrides** — Telegram cap is per channel; the LLM cap is global.
+- **Forum topic threads** — posts go to the group/channel root; no
+  `message_thread_id` yet.
+- **Per-feed rate overrides** — Telegram cap is per target chat; the LLM cap is global.
